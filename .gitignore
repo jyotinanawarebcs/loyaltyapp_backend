@@ -1,0 +1,119 @@
+StitchCarbackend/db.sqlite3
+
+# Django #
+*.log
+*.pot
+*.pyc
+__pycache__/
+db.sqlite3
+media/
+staticfiles/
+local_settings.py
+
+# Environment #
+.env
+venv/
+env/
+ENV/
+.venv/
+env.bak/
+env.bak
+
+# PyCharm / VSCode #
+.idea/
+.vscode/
+*.code-workspace
+
+# Byte-compiled / optimized / DLL files #
+__pycache__/
+*.py[cod]
+*$py.class
+
+# C extensions #
+*.so
+
+# Distribution / packaging #
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Installer logs #
+pip-log.txt
+pip-delete-this-directory.txt
+
+# Unit test / coverage reports #
+htmlcov/
+.tox/
+.nox/
+.coverage
+.coverage.*
+.cache
+nosetests.xml
+coverage.xml
+*.cover
+*.py,cover
+.hypothesis/
+.pytest_cache/
+
+# Jupyter Notebook #
+.ipynb_checkpoints
+
+# mypy #
+.mypy_cache/
+.dmypy.json
+dmypy.json
+
+# pyre type checker #
+.pyre/
+
+# VSCode #
+.vscode/
+
+# System files #
+.DS_Store
+Thumbs.db
+
+# Docker #
+*.pid
+*.seed
+docker-compose.override.yml
+
+# Logs #
+logs/
+*.log
+
+# Celery #
+celerybeat-schedule
+celerybeat.pid
+
+# Static + Media (collected) #
+/static/
+/media/
+
+# Local configuration #
+*.env.local
+.env.development
+.env.production
+
+# Cache #
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Migration backups #
+*/migrations/__pycache__/
+*/migrations/*.pyc
+
