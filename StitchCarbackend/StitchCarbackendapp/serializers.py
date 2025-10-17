@@ -98,25 +98,3 @@ class CustomUserSerializer(serializers.ModelSerializer):
             'phone_number', 'profile_image', 'is_customer',
         ]
         read_only_fields = ['id']
-
-#=================================================================================================
-from rest_framework import serializers
-from .models import Offer
-
-class OfferSerializer(serializers.ModelSerializer):
-    service_title = serializers.ReadOnlyField(source='service.title')
-    is_valid = serializers.SerializerMethodField()
-
-    class Meta:
-        model = Offer
-        fields = [
-            'id', 'service', 'service_title', 'title', 'description',
-            'discount_percentage', 'valid_from', 'valid_to', 
-            'is_active', 'image', 'is_valid'
-        ]
-        read_only_fields = ['id', 'is_valid']
-
-    def get_is_valid(self, obj):
-        """Return True if offer is currently valid"""
-        return obj.is_valid()
-

@@ -25,7 +25,7 @@ SECRET_KEY = 'django-insecure--wkfg%_obrw4so3m%4)suun=71_))x*f!$$qg+*5zdk-&!j##s
 # SECURITY WARNING: don't run with debug turned on in production!
 DEBUG = True
 
-ALLOWED_HOSTS = []
+ALLOWED_HOSTS = ['192.168.1.15','localhost','127.0.0.1','0.0.0.0']
 
 
 # Application definition
@@ -37,8 +37,10 @@ INSTALLED_APPS = [
     'django.contrib.sessions',
     'django.contrib.messages',
     'django.contrib.staticfiles',
-    'StitchCarbackend',
-    'graphene_django'
+    'StitchCarbackendapp',
+    'rest_framework',
+    'graphene_django',
+    'corsheaders'
 ]
 
 MIDDLEWARE = [
@@ -49,8 +51,13 @@ MIDDLEWARE = [
     'django.contrib.auth.middleware.AuthenticationMiddleware',
     'django.contrib.messages.middleware.MessageMiddleware',
     'django.middleware.clickjacking.XFrameOptionsMiddleware',
+    'corsheaders.middleware.CorsMiddleware',
 ]
 
+CORS_ALLOWED_ORIGINS = [
+    "http://localhost:3000",  # React Native dev server URL
+]
+CORS_ALLOW_ALL_ORIGINS = True
 ROOT_URLCONF = 'StitchCarbackend.urls'
 
 TEMPLATES = [
@@ -132,3 +139,6 @@ DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 GRAPHENE = {
     'SCHEMA': 'api.schema.schema'  # we'll create this next
 }
+AUTH_USER_MODEL = 'StitchCarbackendapp.CustomUser'
+# Redirect after login
+LOGIN_REDIRECT_URL = '/bookings/'
