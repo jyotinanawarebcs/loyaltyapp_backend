@@ -1,5 +1,12 @@
 from django.contrib import admin
-from .models import Booking
+from .models import Service,Booking
+# Register your models here.
+@admin.register(Service)
+class ServiceAdmin(admin.ModelAdmin):
+    list_display = ('id', 'title', 'price', 'is_popular')
+    list_filter = ('is_popular',)
+    search_fields = ('title', 'description')
+
 
 @admin.register(Booking)
 class BookingAdmin(admin.ModelAdmin):

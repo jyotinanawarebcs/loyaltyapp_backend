@@ -1,7 +1,13 @@
 from rest_framework import serializers
-from .models import Booking, Service, Offer, Customer
-from django.utils import timezone
+from .models import Service,CustomUser,Booking,Customer,Offer
+from django.contrib.auth import authenticate
+from rest_framework_simplejwt.tokens import RefreshToken
 from datetime import date, datetime
+class ServiceSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = Service
+        fields = '__all__' 
+
 
 class BookingSerializer(serializers.ModelSerializer):
     # show related object titles for readability (read-only)
@@ -84,12 +90,6 @@ class BookingSerializer(serializers.ModelSerializer):
         instance.save()
         return instance
 
-
-#================================================================================================
-
-from rest_framework import serializers
-from .models import CustomUser
-
 class CustomUserSerializer(serializers.ModelSerializer):
     class Meta:
         model = CustomUser
@@ -97,4 +97,44 @@ class CustomUserSerializer(serializers.ModelSerializer):
             'id', 'username', 'email', 'password','first_name', 'last_name',
             'phone_number', 'profile_image', 'is_customer',
         ]
-        read_only_fields = ['id']
+        read_only_fields=['id']
+
+class RegisterSerializer(serializers.ModelSerializer):
+    password = serializers.CharField(write_only=True)
+    confirm_password = serializers.CharField(write_only=True)
+
+    class Meta:
+        model = CustomUser
+        fields = ['username', 'email','phone_number','password', 'confirm_password']
+
+    def validate(self, attrs):
+        if attrs['password'] != attrs['confirm_password']:
+            raise serializers.ValidationError({"confirm_password": "Passwords do not match."})
+        return attrs
+
+    def create(self, validated_data):
+        validated_data.pop('confirm_password')  
+        password = validated_data.pop('password')
+        user = CustomUser(**validated_data)
+        user.set_password(password)
+        user.save()
+        return user
+            
+class LoginSerializer(serializers.Serializer):
+    username = serializers.CharField()
+    password = serializers.CharField(write_only=True)
+
+    def validate(self, attrs):
+        username = attrs.get("username")
+        password = attrs.get("password")
+        print("Username:", username)
+        print("Password:", password)
+        if not username or not password:
+            raise serializers.ValidationError("Must include username and password.")
+        user = authenticate(username=username, password=password)
+        if not user:
+            raise serializers.ValidationError("Invalid username or password.")
+        if not user.is_active:
+            raise serializers.ValidationError("User account is disabled.")
+        attrs['user'] = user
+        return attrs
