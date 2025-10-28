@@ -19,6 +19,6 @@ from django.urls import path, include
 
 urlpatterns = [
     path('admin/', admin.site.urls),           # Django admin
-    path('', include('StitchCarbackend.StitchCarbackendapp.urls')),
+    path('', include('StitchCarbackendapp.urls')),
     path('api/', include('rest_framework.urls')),  # optional login for browsable API
 ]
