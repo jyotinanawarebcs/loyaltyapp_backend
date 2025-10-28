@@ -58,7 +58,7 @@ CORS_ALLOWED_ORIGINS = [
     "http://localhost:3000",  # React Native dev server URL
 ]
 CORS_ALLOW_ALL_ORIGINS = True
-ROOT_URLCONF = 'StitchCarbackend.StitchCar.urls'
+ROOT_URLCONF = 'StitchCar.urls'
 
 TEMPLATES = [
     {
@@ -76,7 +76,7 @@ TEMPLATES = [
     },
 ]
 
-WSGI_APPLICATION = 'StitchCarbackend.StitchCar.wsgi.application'
+WSGI_APPLICATION = 'StitchCar.wsgi.application'
 
 
 # Database
