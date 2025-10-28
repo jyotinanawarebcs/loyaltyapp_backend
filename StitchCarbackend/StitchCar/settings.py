@@ -88,7 +88,7 @@ DATABASES = {
         'NAME': 'stitchcar_db',
         'USER': 'stitchcar_user',
         'PASSWORD': 'stitchpass',
-        'HOST': 'localhost',
+        'HOST': 'postgres',
         'PORT': '5432',
     }
 }
