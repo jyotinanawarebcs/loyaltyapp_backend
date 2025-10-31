@@ -12,19 +12,96 @@ from rest_framework.generics import GenericAPIView
 from rest_framework.response import Response
 from rest_framework import status, permissions
 from django.contrib.auth import login
-from .serializers import  RegisterSerializer,LoginSerializer,BookingSerializer
+from .serializers import  RegisterSerializer,LoginSerializer,BookingSerializer,PasswordResetRequestSerializer,PasswordResetConfirmSerializer
 from .models import Booking,Customer
 from rest_framework_simplejwt.tokens import RefreshToken, TokenError
 from rest_framework.views import APIView
 from rest_framework import viewsets, permissions, status, filters, serializers
 from rest_framework.response import Response
 from rest_framework.decorators import action
+from django.contrib.auth import get_user_model
+from django.contrib.auth.tokens import PasswordResetTokenGenerator
+from django.utils.http import urlsafe_base64_encode, urlsafe_base64_decode
+from django.utils.encoding import force_bytes, force_str
+from django.core.mail import send_mail
+from django.conf import settings
+
+User = get_user_model()
+token_generator = PasswordResetTokenGenerator()
+
+
+class PasswordResetRequestAPIView(GenericAPIView):
+    serializer_class = PasswordResetRequestSerializer
+    permission_classes = [permissions.AllowAny]
+
+    def post(self, request):
+        serializer = self.get_serializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        email = serializer.validated_data['email'].strip().lower()
+
+        try:
+            user = User.objects.get(email=email)
+        except User.DoesNotExist:
+            # Do not leak whether user exists
+            return Response({"message": "If this email exists, a reset link has been sent."},
+                            status=status.HTTP_200_OK)
+
+        uid = urlsafe_base64_encode(force_bytes(user.pk))
+        token = token_generator.make_token(user)
+
+        reset_url = f"http://localhost:8000/api/password-reset/confirm?uid={uid}&token={token}"
+
+        subject = "Password Reset Request"
+        message = (
+            f"Hi {user.username},\n\n"
+            f"You requested a password reset.\n\n"
+            f"Click this link to set a new password:\n{reset_url}\n\n"
+            f"If you did not request this, please ignore this email."
+        )
+        send_mail(subject, message, settings.DEFAULT_FROM_EMAIL, [user.email])
+
+        return Response({"message": "If this email exists, a reset link has been sent."},
+                        status=status.HTTP_200_OK)
+
+
+class PasswordResetConfirmAPIView(GenericAPIView):
+    serializer_class = PasswordResetConfirmSerializer
+    permission_classes = [permissions.AllowAny]
+
+    def post(self, request):
+        serializer = self.get_serializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+
+        uid = serializer.validated_data['uid']
+        token = serializer.validated_data['token']
+        new_password = serializer.validated_data['new_password']
+
+        try:
+            uid = force_str(urlsafe_base64_decode(uid))
+            user = User.objects.get(pk=uid)
+        except (TypeError, ValueError, OverflowError, User.DoesNotExist):
+            return Response({"error": "Invalid user ID."}, status=status.HTTP_400_BAD_REQUEST)
+
+        if not token_generator.check_token(user, token):
+            return Response({"error": "Invalid or expired token."}, status=status.HTTP_400_BAD_REQUEST)
+
+        user.set_password(new_password)
+        user.save()
+
+        return Response({"message": "Password has been reset successfully."},
+                        status=status.HTTP_200_OK)
 
 class ServiceViewSet(viewsets.ModelViewSet):
     queryset = Service.objects.all()
     serializer_class = ServiceSerializer
 
-
+    def get_permissions(self):
+        """Allow anyone to view, but only authenticated users can modify."""
+        if self.action in ['list', 'retrieve']:
+            permission_classes = [permissions.AllowAny]
+        else:
+            permission_classes = [permissions.IsAdminUser]
+        return [permission() for permission in permission_classes]
 
 class AdminServiceViewSet(viewsets.ModelViewSet):
     queryset = Service.objects.all()
@@ -34,9 +111,9 @@ class AdminServiceViewSet(viewsets.ModelViewSet):
 class CustomUserViewSet(viewsets.ModelViewSet):
     queryset = CustomUser.objects.all()
     serializer_class = CustomUserSerializer
-    permission_classes = [IsAuthenticated]  # Only logged-in users can view/edit
+    permission_classes = [IsAuthenticated]  
 
-    # Optional: customize create to handle password
+    
     def perform_create(self, serializer):
         user = serializer.save()
         password = self.request.data.get('password')
@@ -94,6 +171,11 @@ class LoginAPIView(GenericAPIView):
         serializer = LoginSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         user = serializer.validated_data['user']
+
+        from_device = request.data.get("device", "mobile")
+        if from_device == "web" and not user.is_staff:
+            return Response({"error": "Access denied. Only admin can login here."}, status=403)
+
         refresh = RefreshToken.for_user(user)
 
         return Response({
@@ -134,6 +216,11 @@ class BookingViewSet(viewsets.ModelViewSet):
     search_fields = ['service__title', 'customer__user__username', 'status', 'vehicle_make', 'vehicle_model']
     ordering_fields = ['booking_date', 'appointment_date', 'total_price']
     
+    def get_serializer_context(self):
+        ctx = super().get_serializer_context()
+        ctx['request'] = self.request
+        return ctx
+
     def get_queryset(self):
         qs = super().get_queryset()
         user = getattr(self.request, 'user', None)
@@ -180,3 +267,26 @@ class BookingViewSet(viewsets.ModelViewSet):
         booking.status = 'cancelled'
         booking.save()
         return Response(self.get_serializer(booking).data)               
+
+class AdminRegisterAPIView(GenericAPIView):
+    serializer_class = RegisterSerializer
+    permission_classes = [permissions.AllowAny]
+
+    def post(self, request):
+        serializer = self.get_serializer(data=request.data)
+        if serializer.is_valid():
+            user = serializer.save()
+            user.is_staff = True  
+            user.save()
+
+            return Response({
+                "message": "Admin registered successfully",
+                "user": {
+                    "id": user.id,
+                    "username": user.username,
+                    "email": user.email,
+                    "is_staff": user.is_staff,
+                }
+            }, status=status.HTTP_201_CREATED)
+
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)

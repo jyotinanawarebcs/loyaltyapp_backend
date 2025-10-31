@@ -3,11 +3,29 @@ from .models import Service,CustomUser,Booking,Customer,Offer
 from django.contrib.auth import authenticate
 from rest_framework_simplejwt.tokens import RefreshToken
 from datetime import date, datetime
+from django.contrib.auth import get_user_model
+
+User = get_user_model()
+
+class PasswordResetRequestSerializer(serializers.Serializer):
+    email = serializers.EmailField()
+
+
+class PasswordResetConfirmSerializer(serializers.Serializer):
+    uid = serializers.CharField()
+    token = serializers.CharField()
+    new_password = serializers.CharField(write_only=True)
+    confirm_password = serializers.CharField(write_only=True)
+
+    def validate(self, attrs):
+        if attrs['new_password'] != attrs['confirm_password']:
+            raise serializers.ValidationError({"confirm_password": "Passwords do not match."})
+        return attrs
+
 class ServiceSerializer(serializers.ModelSerializer):
     class Meta:
         model = Service
         fields = '__all__' 
-
 
 class BookingSerializer(serializers.ModelSerializer):
     # show related object titles for readability (read-only)
@@ -138,3 +156,5 @@ class LoginSerializer(serializers.Serializer):
             raise serializers.ValidationError("User account is disabled.")
         attrs['user'] = user
         return attrs
+
+        
