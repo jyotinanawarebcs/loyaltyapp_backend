@@ -109,13 +109,40 @@ class BookingSerializer(serializers.ModelSerializer):
         return instance
 
 class CustomUserSerializer(serializers.ModelSerializer):
+    password = serializers.CharField(
+        write_only=True, required=False, allow_blank=True
+    )
     class Meta:
         model = CustomUser
         fields = [
             'id', 'username', 'email', 'password','first_name', 'last_name',
-            'phone_number', 'profile_image', 'is_customer',
+            'phone_number', 'profile_image', 'is_customer', 'is_staff'
         ]
         read_only_fields=['id']
+
+    def create(self, validated_data):
+        password = validated_data.pop('password', None)
+        is_customer = validated_data.get("is_customer", True)
+        if is_customer:
+            validated_data["is_staff"] = False
+        else:
+            validated_data["is_staff"] = True
+
+        user = super().create(validated_data)
+        if password:
+            user.set_password(password)
+            user.save()
+
+        return user
+
+    def update(self, instance, validated_data):
+        password = validated_data.pop('password', None)
+        for attr, value in validated_data.items():
+            setattr(instance, attr, value)
+        if password:
+            instance.set_password(password)
+        instance.save()
+        return instance
 
 class RegisterSerializer(serializers.ModelSerializer):
     password = serializers.CharField(write_only=True)
@@ -124,6 +151,16 @@ class RegisterSerializer(serializers.ModelSerializer):
     class Meta:
         model = CustomUser
         fields = ['username', 'email','phone_number','password', 'confirm_password']
+
+    def validate_email(self, value):
+        if User.objects.filter(email=value).exists():
+            raise serializers.ValidationError("Email already exists")
+        return value   
+
+    def validate_username(self, value):
+        if not value.isalpha():
+            raise serializers.ValidationError("Username must contain only letters")
+        return value    
 
     def validate(self, attrs):
         if attrs['password'] != attrs['confirm_password']:
@@ -157,4 +194,10 @@ class LoginSerializer(serializers.Serializer):
         attrs['user'] = user
         return attrs
 
-        
+class SendVerificationCodeSerializer(serializers.Serializer):
+    email = serializers.EmailField()
+
+
+class VerifyCodeSerializer(serializers.Serializer):
+    email = serializers.EmailField()
+    code = serializers.CharField(max_length=6)        

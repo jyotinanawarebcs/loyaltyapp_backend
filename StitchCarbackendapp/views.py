@@ -2,7 +2,7 @@ from django.shortcuts import render
 
 # Create your views here.
 from rest_framework import viewsets,permissions
-from .models import Service
+from .models import Service,PasswordResetCode
 from .serializers import ServiceSerializer
 from rest_framework import viewsets
 from rest_framework.permissions import IsAdminUser, IsAuthenticated
@@ -12,7 +12,7 @@ from rest_framework.generics import GenericAPIView
 from rest_framework.response import Response
 from rest_framework import status, permissions
 from django.contrib.auth import login
-from .serializers import  RegisterSerializer,LoginSerializer,BookingSerializer,PasswordResetRequestSerializer,PasswordResetConfirmSerializer
+from .serializers import  RegisterSerializer,LoginSerializer,BookingSerializer,PasswordResetRequestSerializer,PasswordResetConfirmSerializer,SendVerificationCodeSerializer,VerifyCodeSerializer
 from .models import Booking,Customer
 from rest_framework_simplejwt.tokens import RefreshToken, TokenError
 from rest_framework.views import APIView
@@ -92,7 +92,7 @@ class PasswordResetConfirmAPIView(GenericAPIView):
                         status=status.HTTP_200_OK)
 
 class ServiceViewSet(viewsets.ModelViewSet):
-    queryset = Service.objects.all()
+    queryset = Service.objects.all().order_by('id')
     serializer_class = ServiceSerializer
 
     def get_permissions(self):
@@ -120,6 +120,11 @@ class CustomUserViewSet(viewsets.ModelViewSet):
         if password:
             user.set_password(password)
             user.save()
+
+    def get_permissions(self):
+        if self.action in ['list', 'create', 'update', 'partial_update', 'destroy']:
+            return [IsAdminUser()]  
+        return [IsAuthenticated()]         
     
 class IsCustomerOrReadOnly(permissions.BasePermission):
     """
@@ -186,8 +191,9 @@ class LoginAPIView(GenericAPIView):
                 "email": user.email,
             },
             "tokens": {
-                "refresh": str(refresh),
                 "access": str(refresh.access_token),
+                "refresh": str(refresh),
+                
             }
         }, status=status.HTTP_200_OK)
 
@@ -290,3 +296,74 @@ class AdminRegisterAPIView(GenericAPIView):
             }, status=status.HTTP_201_CREATED)
 
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+class SendVerificationCodeAPIView(GenericAPIView):
+    serializer_class = SendVerificationCodeSerializer
+    permission_classes = [permissions.AllowAny]
+
+    def post(self, request):
+        serializer = self.serializer_class(data=request.data)
+        serializer.is_valid(raise_exception=True)
+
+        email = serializer.validated_data["email"].strip().lower()
+
+        try:
+            user = User.objects.get(email=email)
+        except User.DoesNotExist:
+            return Response({"error": "No user found with this email."}, status=status.HTTP_404_NOT_FOUND)
+
+        # Generate verification code
+        import random
+        code = str(random.randint(100000, 999999))
+
+        # Save in DB
+        PasswordResetCode.objects.create(user=user, code=code)
+
+        # Send OTP email
+        send_mail(
+            "Your Password Reset Verification Code",
+            f"Your verification code is: {code}",
+            settings.DEFAULT_FROM_EMAIL,
+            [email],
+            fail_silently=False,
+        )
+
+        return Response({"message": "Verification code sent to your email."}, status=status.HTTP_200_OK)
+
+
+
+
+class VerifyCodeAPIView(GenericAPIView):
+    serializer_class = VerifyCodeSerializer
+    permission_classes = [permissions.AllowAny]
+
+    def post(self, request):
+        serializer = self.serializer_class(data=request.data)
+        serializer.is_valid(raise_exception=True)
+
+        email = serializer.validated_data["email"].strip().lower()
+        code = serializer.validated_data["code"].strip()
+
+        try:
+            user = User.objects.get(email=email)
+        except User.DoesNotExist:
+            return Response({"error": "Invalid email or code"}, status=status.HTTP_400_BAD_REQUEST)
+
+        try:
+            latest_code = PasswordResetCode.objects.filter(user=user).latest("created_at")
+        except PasswordResetCode.DoesNotExist:
+            return Response({"error": "Invalid code"}, status=status.HTTP_400_BAD_REQUEST)
+
+        if latest_code.code != code:
+            return Response({"error": "Incorrect verification code"}, status=status.HTTP_400_BAD_REQUEST)
+
+        # ✅ Code Verified → Now generate uid & token
+        uid = urlsafe_base64_encode(force_bytes(user.pk))
+        token = token_generator.make_token(user)
+
+        # ✅ Instead of sending reset link, we return uid & token to app
+        return Response({
+            "message": "Verification successful.",
+            "uid": uid,
+            "token": token
+        }, status=status.HTTP_200_OK)
