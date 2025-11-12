@@ -4,6 +4,8 @@ from django.contrib.auth import authenticate
 from rest_framework_simplejwt.tokens import RefreshToken
 from datetime import date, datetime
 from django.contrib.auth import get_user_model
+from .models import FAQ, ContactOption, Resource
+
 
 User = get_user_model()
 

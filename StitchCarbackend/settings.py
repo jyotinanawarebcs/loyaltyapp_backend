@@ -13,7 +13,7 @@ https://docs.djangoproject.com/en/4.2/ref/settings/
 from pathlib import Path
 from datetime import timedelta
 SIMPLE_JWT = {
-    'ACCESS_TOKEN_LIFETIME': timedelta(hours=1),
+    'ACCESS_TOKEN_LIFETIME': timedelta(hours=2),
     'REFRESH_TOKEN_LIFETIME': timedelta(days=7),  
 }
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
@@ -29,7 +29,7 @@ SECRET_KEY = 'django-insecure-wts1*=l1=tx77is7_yufqo-@_^^#nqgsj#-1+eeoq$4ft+!gn-
 # SECURITY WARNING: don't run with debug turned on in production!
 DEBUG = True
 
-ALLOWED_HOSTS = ['192.168.1.10', 'localhost', '127.0.0.1','0.0.0.0']
+ALLOWED_HOSTS = ['192.168.1.18', 'localhost', '127.0.0.1','0.0.0.0']
 
 
 # Application definition
@@ -45,6 +45,7 @@ INSTALLED_APPS = [
     'rest_framework_simplejwt.token_blacklist',
     'corsheaders',
     'StitchCarbackendapp',
+    "drf_spectacular",
 ]
 
 MIDDLEWARE = [
@@ -85,17 +86,15 @@ WSGI_APPLICATION = 'StitchCarbackend.wsgi.application'
 
 
 DATABASES = {
-            'default': {
-            'ENGINE': 'django.db.backends.postgresql',
-            'NAME': 'loyalty_db',        
-            'USER': 'stitchcar_user',      
-            'PASSWORD': 'password',
-            'HOST': 'localhost',   
-            'PORT': '5432', 
-        
-        }
+        'default': {
+        'ENGINE': 'django.db.backends.postgresql',
+        'NAME': 'loyaltydb',        
+        'USER': 'postgres',      
+        'PASSWORD': 'root',
+        'HOST': 'localhost',   
+        'PORT': '5432',     
     }
-
+}
 
 # Password validation
 # https://docs.djangoproject.com/en/4.2/ref/settings/#auth-password-validators
@@ -141,6 +140,7 @@ DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 
 REST_FRAMEWORK = {
     'DEFAULT_AUTHENTICATION_CLASSES': [
+        
         'rest_framework_simplejwt.authentication.JWTAuthentication',
         
     ],
@@ -155,14 +155,36 @@ REST_FRAMEWORK = {
         'rest_framework.pagination.PageNumberPagination',
         'PAGE_SIZE': 5,
     
+
+    'DEFAULT_SCHEMA_CLASS': 'drf_spectacular.openapi.AutoSchema',
 }
+
+SPECTACULAR_SETTINGS = {
+    "TITLE": "Loyalty App API",
+    "DESCRIPTION": "API documentation for Loyalty App",
+    "VERSION": "1.0.0",
+    # If using JWT, provide security scheme
+    "COMPONENT_SPLIT_REQUEST": True,
+    "SERVE_INCLUDE_SCHEMA": False,
+    "SWAGGER_UI_SETTINGS": {
+        "deepLinking": True,
+    },
+    "SECURITY": [{"bearerAuth": []}],  # makes authorize button show up
+    "COMPONENTS": {
+        "securitySchemes": {
+            "bearerAuth": {
+                "type": "http",
+                "scheme": "bearer",
+                "bearerFormat": "JWT",
+            }
+        }
+    },
+}
+
 AUTHENTICATION_BACKENDS = [
     'django.contrib.auth.backends.ModelBackend',
 ]
 AUTH_USER_MODEL = 'StitchCarbackendapp.CustomUser'
-
-EMAIL_BACKEND = "django.core.mail.backends.console.EmailBackend"
-DEFAULT_FROM_EMAIL = "noreply@company.com"
 
 #EMAIL SETTINGS
 
@@ -170,7 +192,7 @@ EMAIL_BACKEND = "django.core.mail.backends.smtp.EmailBackend"
 EMAIL_HOST = "smtp.gmail.com"
 EMAIL_PORT = 587
 EMAIL_USE_TLS = True
-EMAIL_HOST_USER = "devyani.bcs@gmail.com"   
+EMAIL_HOST_USER = "rutujapatil.bcs@gmail.com"   
 EMAIL_HOST_PASSWORD = "ftmc wzrk yujg paew"   
 DEFAULT_FROM_EMAIL = EMAIL_HOST_USER
 

@@ -7,6 +7,7 @@ from .serializers import ServiceSerializer
 from rest_framework import viewsets
 from rest_framework.permissions import IsAdminUser, IsAuthenticated
 from .models import CustomUser
+from rest_framework.permissions import AllowAny
 from .serializers import CustomUserSerializer
 from rest_framework.generics import GenericAPIView
 from rest_framework.response import Response
@@ -25,6 +26,18 @@ from django.utils.http import urlsafe_base64_encode, urlsafe_base64_decode
 from django.utils.encoding import force_bytes, force_str
 from django.core.mail import send_mail
 from django.conf import settings
+from django.utils import timezone
+from rest_framework import generics
+from .models import PasswordResetCode, User
+from .serializers import SendVerificationCodeSerializer, VerifyCodeSerializer
+from django.core.mail import EmailMultiAlternatives
+from datetime import date
+from .permissions import IsCustomerOrReadOnly
+from rest_framework import viewsets,permissions
+from .models import FAQ, ContactOption, Resource
+from .serializers import FAQSerializer, ContactOptionSerializer, ResourceSerializer
+
+
 
 User = get_user_model()
 token_generator = PasswordResetTokenGenerator()
@@ -193,7 +206,7 @@ class LoginAPIView(GenericAPIView):
             "tokens": {
                 "access": str(refresh.access_token),
                 "refresh": str(refresh),
-                
+               
             }
         }, status=status.HTTP_200_OK)
 
@@ -217,7 +230,7 @@ class LogoutAPIView(APIView):
 class BookingViewSet(viewsets.ModelViewSet):
     queryset = Booking.objects.all().select_related('customer__user', 'service', 'offer')
     serializer_class = BookingSerializer
-    permission_classes = [IsCustomerOrReadOnly]
+    permission_classes = [permissions.IsAuthenticatedOrReadOnly,IsCustomerOrReadOnly]
     filter_backends = [filters.SearchFilter, filters.OrderingFilter]
     search_fields = ['service__title', 'customer__user__username', 'status', 'vehicle_make', 'vehicle_model']
     ordering_fields = ['booking_date', 'appointment_date', 'total_price']

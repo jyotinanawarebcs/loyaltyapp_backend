@@ -1,9 +1,13 @@
 from django.contrib import admin
-from .models import Service,Booking
+from .models import Service,Booking, FAQ, ContactOption, Resource
 from django.contrib.auth import get_user_model
 
 User = get_user_model()
 admin.site.register(User)
+admin.site.register(FAQ)
+admin.site.register(ContactOption)
+admin.site.register(Resource)
+
 # Register your models here.
 @admin.register(Service)
 class ServiceAdmin(admin.ModelAdmin):
