@@ -1,12 +1,13 @@
 from django.urls import path, include
 from rest_framework.routers import DefaultRouter
-from .views import ServiceViewSet,RegisterAPIView,LoginAPIView,LogoutAPIView,PasswordResetRequestAPIView,PasswordResetConfirmAPIView,AdminRegisterAPIView, SendVerificationCodeAPIView, VerifyCodeAPIView
-from .views import AdminServiceViewSet,CustomUserViewSet,BookingViewSet
+from .views import ServiceViewSet,RegisterAPIView,LoginAPIView,LogoutAPIView,PasswordResetRequestAPIView,PasswordResetConfirmAPIView,AdminRegisterAPIView, SendVerificationCodeAPIView, VerifyCodeAPIView,BookingViewSet,AdminServiceViewSet,CustomUserViewSet
 from rest_framework_simplejwt.views import (
     TokenObtainPairView,   
     TokenRefreshView,     
 )
-from .views import FAQViewSet, ContactOptionViewSet, ResourceViewSet
+from .views import OfferViewSet, VehicleViewSet
+from .views import ReferralDashboardAPIView, InviteFriendAPIView, FeaturedPromotionViewSet, PromotionBannerViewSet
+
 
 
 router = DefaultRouter()
@@ -14,9 +15,19 @@ router.register(r'bookings', BookingViewSet, basename='booking')
 router.register(r'services', ServiceViewSet, basename='service')
 router.register(r'admin-services', AdminServiceViewSet, basename='admin-service')
 router.register(r'users', CustomUserViewSet, basename='user')
+router.register(r'offers', OfferViewSet, basename='offer')
+router.register(r'vehicles', VehicleViewSet, basename='vehicle')
+router.register(r'featured-promotions', FeaturedPromotionViewSet, basename='featured-promotions')
+router.register('promotion-banners', PromotionBannerViewSet)
+
+
 
 urlpatterns = [
-    path('', include(router.urls)),
+    path('api/', include(router.urls)),
+     path('bookings/check-status/<int:user_id>/',
+        BookingViewSet.as_view({'get': 'check_user_booking_status'}),
+        name='booking-check-status'
+    ),
     path('api/register/', RegisterAPIView.as_view(), name='register'),
     path('api/admin/register/', AdminRegisterAPIView.as_view(), name='admin-register'),
     path('api/login/', LoginAPIView.as_view(), name='login'),
@@ -27,4 +38,10 @@ urlpatterns = [
     path("api/password-reset/confirm/", PasswordResetConfirmAPIView.as_view(), name="password_reset_confirm"),
     path('send-verification-code/', SendVerificationCodeAPIView.as_view(), name='send_verification_code'),
     path('verify-code/', VerifyCodeAPIView.as_view(), name='verify_code'),
+    path("referral/dashboard/", ReferralDashboardAPIView.as_view()),
+    path("referral/invite/", InviteFriendAPIView.as_view()),
+  
+   
+    
+    
 ]

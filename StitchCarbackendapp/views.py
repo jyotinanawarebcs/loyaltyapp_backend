@@ -18,7 +18,6 @@ from .models import Booking,Customer
 from rest_framework_simplejwt.tokens import RefreshToken, TokenError
 from rest_framework.views import APIView
 from rest_framework import viewsets, permissions, status, filters, serializers
-from rest_framework.response import Response
 from rest_framework.decorators import action
 from django.contrib.auth import get_user_model
 from django.contrib.auth.tokens import PasswordResetTokenGenerator
@@ -28,15 +27,26 @@ from django.core.mail import send_mail
 from django.conf import settings
 from django.utils import timezone
 from rest_framework import generics
-from .models import PasswordResetCode, User
+from .models import PasswordResetCode
 from .serializers import SendVerificationCodeSerializer, VerifyCodeSerializer
 from django.core.mail import EmailMultiAlternatives
 from datetime import date
 from .permissions import IsCustomerOrReadOnly
-from rest_framework import viewsets,permissions
-from .models import FAQ, ContactOption, Resource
-from .serializers import FAQSerializer, ContactOptionSerializer, ResourceSerializer
-
+from rest_framework import generics, permissions
+from .models import Offer
+from .serializers import OfferSerializer
+from rest_framework_simplejwt.authentication import JWTAuthentication 
+from rest_framework.views import APIView
+from .models import ReferralProfile, ReferralActivity, Booking
+from .serializers import ReferralProfileSerializer,InviteFriendSerializer
+from .serializers import VehicleSerializer
+from .models import Vehicle
+from .models import FeaturedPromotion, PromotionBanner
+from .serializers import FeaturedPromotionSerializer, PromotionBannerSerializer
+from rest_framework import viewsets
+from rest_framework.permissions import AllowAny, IsAuthenticated
+from django.utils import timezone
+from datetime import timedelta
 
 
 User = get_user_model()
@@ -165,8 +175,36 @@ class RegisterAPIView(GenericAPIView):
 
     def post(self, request):
         serializer = self.get_serializer(data=request.data)
+
         if serializer.is_valid():
             user = serializer.save()  
+            phone = user.phone_number
+
+            # --------------------------
+            # REFERRAL REGISTRATION LOGIC
+            # --------------------------
+            referral_code = request.data.get("referral_code")
+
+            if referral_code:
+                try:
+                    ref_profile = ReferralProfile.objects.get(referral_code=referral_code)
+                    referrer = ref_profile.user
+                except ReferralProfile.DoesNotExist:
+                    referrer = None
+
+                if referrer:
+                    # Create or update referral activity
+                    activity, created = ReferralActivity.objects.get_or_create(
+                        referrer=referrer,
+                        referred_phone=phone,
+                        defaults={"status": "registered"}
+                    )
+
+                    if not created:
+                        activity.status = "registered"
+                        activity.save()
+
+            # --------------------------
 
             return Response({
                 "message": "User registered successfully",
@@ -179,6 +217,28 @@ class RegisterAPIView(GenericAPIView):
             }, status=status.HTTP_201_CREATED)
 
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+      
+# class RegisterAPIView(GenericAPIView):
+#     serializer_class = RegisterSerializer
+#     permission_classes = [permissions.AllowAny]
+
+#     def post(self, request):
+#         serializer = self.get_serializer(data=request.data)
+#         if serializer.is_valid():
+#             user = serializer.save()  
+
+#             return Response({
+#                 "message": "User registered successfully",
+#                 "user": {
+#                     "id": user.id,
+#                     "username": user.username,
+#                     "email": user.email,
+#                     "phone_number": user.phone_number,
+#                 }
+#             }, status=status.HTTP_201_CREATED)
+
+#         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
 
 class LoginAPIView(GenericAPIView):
@@ -228,64 +288,162 @@ class LogoutAPIView(APIView):
 
 
 class BookingViewSet(viewsets.ModelViewSet):
-    queryset = Booking.objects.all().select_related('customer__user', 'service', 'offer')
+    # queryset = Booking.objects.all().select_related('customer__user',  'offer')
+    queryset = Booking.objects.all().select_related('customer__user', 'offer').prefetch_related('services')
     serializer_class = BookingSerializer
-    permission_classes = [permissions.IsAuthenticatedOrReadOnly,IsCustomerOrReadOnly]
+    permission_classes = [permissions.IsAuthenticatedOrReadOnly, IsCustomerOrReadOnly]
     filter_backends = [filters.SearchFilter, filters.OrderingFilter]
     search_fields = ['service__title', 'customer__user__username', 'status', 'vehicle_make', 'vehicle_model']
     ordering_fields = ['booking_date', 'appointment_date', 'total_price']
-    
+
     def get_serializer_context(self):
         ctx = super().get_serializer_context()
         ctx['request'] = self.request
         return ctx
 
+    # def get_queryset(self):
+    #     qs = super().get_queryset()
+    #     user = getattr(self.request, 'user', None)
+    #     if user and user.is_authenticated and not user.is_staff:
+    #         try:
+    #             customer = Customer.objects.get(user=user)
+    #             return qs.filter(customer=customer)
+    #         except Customer.DoesNotExist:
+    #             return Booking.objects.none()
+    #     return qs
+
+
     def get_queryset(self):
         qs = super().get_queryset()
         user = getattr(self.request, 'user', None)
+
+        # filter by authenticated customer
         if user and user.is_authenticated and not user.is_staff:
             try:
                 customer = Customer.objects.get(user=user)
-                return qs.filter(customer=customer)
+                qs = qs.filter(customer=customer)
             except Customer.DoesNotExist:
                 return Booking.objects.none()
+
+        # ✅ Filter by vehicle_number if provided
+        vehicle_number = self.request.query_params.get("vehicle_number")
+        if vehicle_number:
+            qs = qs.filter(vehicle_number=vehicle_number)
+
         return qs
+
+      
+    
+    def partial_update(self, request, *args, **kwargs):
+        kwargs['partial'] = True
+        return super().update(request, *args, **kwargs)
+
 
     def perform_create(self, serializer):
         user = self.request.user
         customer_data = self.request.data.get("customer", None)
 
-        # Normal user → assign their own customer
+    # ===== CUSTOMER BOOKING VALIDATION =====
         if user.is_authenticated and not user.is_staff:
             try:
-                customer = Customer.objects.get(user=user)
-                serializer.save(customer=customer)
-                return
+                    customer = Customer.objects.get(user=user)
             except Customer.DoesNotExist:
-                raise PermissionError("No Customer profile found for this user.")
+                    raise PermissionError("No Customer profile found for this user.")
 
-        # Admin → can select customer by ID from dropdown
+        # Extract vehicle fields from request
+        vehicle_make = self.request.data.get("vehicle_make")
+        vehicle_model = self.request.data.get("vehicle_model")
+        vehicle_year = self.request.data.get("vehicle_year")
+
+        # 🚫 Block booking ONLY if the SAME car has active booking
+        active_booking = Booking.objects.filter(
+            customer=customer,
+            vehicle_make=vehicle_make,
+            vehicle_model=vehicle_model,
+            vehicle_year=vehicle_year,
+            status__in=['in_progress', 'completed', 'ready_for_pickup']
+        ).first()
+
+        if active_booking:
+            raise serializers.ValidationError({
+                "detail": "You cannot book a new service until your current service is completed."
+            })
+
+        serializer.save(customer=customer)
+        return
+
         if customer_data:
             try:
-                # Convert to int in case it's a string
                 customer = Customer.objects.get(id=int(customer_data))
-                serializer.save(customer=customer)
-                return
             except (ValueError, Customer.DoesNotExist):
                 raise serializers.ValidationError("Customer not found.")
 
-        # Admin fallback: allow saving without specifying customer (should not happen normally)
+        serializer.save(customer=customer)
+        return
+
+    # ===== DEFAULT SAVE =====
         serializer.save()
+
+    def update(self, request, *args, **kwargs):
+        instance = self.get_object()
+        old_status = instance.status  # before update
+
+        response = super().update(request, *args, **kwargs)
+
+        new_status = response.data.get("status")
+
+        # reward only when booking marked completed
+        if old_status != "completed" and new_status == "completed":
+            give_referral_reward(instance.customer.user)
+
+        return response
+    
 
     @action(detail=True, methods=['post'], permission_classes=[permissions.IsAuthenticated])
     def cancel(self, request, pk=None):
         booking = self.get_object()
-        # Allow only owner or staff
         if not (request.user.is_staff or booking.customer.user == request.user):
             return Response({'detail': 'Not allowed'}, status=status.HTTP_403_FORBIDDEN)
         booking.status = 'cancelled'
         booking.save()
-        return Response(self.get_serializer(booking).data)               
+        return Response(self.get_serializer(booking).data)
+    
+    @action(detail=False, methods=['get'], url_path='check-status/(?P<user_id>[^/.]+)')
+    def check_user_booking_status(self, request, user_id=None):
+        try:
+            booking = Booking.objects.filter(customer__user_id=user_id).order_by('-id').first()
+
+            if not booking:
+                return Response(
+                    {'status': 'no_booking'},
+                    status=status.HTTP_200_OK
+                )
+
+            return Response(
+                {'status': booking.status},
+                status=status.HTTP_200_OK
+            )
+
+        except Exception as e:
+            return Response(
+                {'error': str(e)},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+    # ✅ Add this method only
+    def list(self, request, *args, **kwargs):
+        user_agent = request.META.get('HTTP_USER_AGENT', '').lower()
+        is_mobile = 'react-native' in user_agent or 'okhttp' in user_agent
+        no_pagination = request.query_params.get('no_pagination', '').lower() == 'true'
+
+        if is_mobile or no_pagination:
+            # 👇 return all bookings as a flat array for mobile
+            queryset = self.filter_queryset(self.get_queryset())
+            serializer = self.get_serializer(queryset, many=True)
+            return Response(serializer.data)
+
+        # default (web) keeps pagination
+        return super().list(request, *args, **kwargs)
+              
 
 class AdminRegisterAPIView(GenericAPIView):
     serializer_class = RegisterSerializer
@@ -380,3 +538,202 @@ class VerifyCodeAPIView(GenericAPIView):
             "uid": uid,
             "token": token
         }, status=status.HTTP_200_OK)
+    
+
+
+from rest_framework import viewsets, permissions, status
+from rest_framework.response import Response
+from rest_framework_simplejwt.authentication import JWTAuthentication
+from django.utils import timezone
+from .models import Offer
+from .serializers import OfferSerializer
+#
+from drf_spectacular.utils import extend_schema
+
+
+class OfferViewSet(viewsets.ModelViewSet):
+    """
+    CRUD API for Offer model:
+    - Anyone can GET (list/retrieve) active offers.
+    - Only admin users can POST, PUT, PATCH, DELETE.
+    - Supports bulk creation for admin users.
+    """
+    serializer_class = OfferSerializer
+    authentication_classes = [JWTAuthentication]
+
+    def get_queryset(self):
+        if self.request.user.is_staff:
+            return Offer.objects.all().order_by('-valid_from')
+        return Offer.objects.filter(is_active=True, valid_to__gte=timezone.now()).order_by('-valid_from')
+
+    def get_permissions(self):
+        if self.action in ['list', 'retrieve']:
+            permission_classes = [permissions.AllowAny]
+        else:
+            permission_classes = [permissions.IsAdminUser]
+        return [permission() for permission in permission_classes]
+
+    @extend_schema(
+        request=OfferSerializer(many=True),
+        responses={201: OfferSerializer(many=True)},
+        summary="Create multiple offers",
+        description="Create multiple offers for services at once"
+    )
+    def create(self, request, *args, **kwargs):
+        """
+        Override create to support both single and bulk creation.
+        """
+        many = isinstance(request.data, list)
+        serializer = self.get_serializer(data=request.data, many=many)
+        serializer.is_valid(raise_exception=True)
+        self.perform_create(serializer)
+        return Response(serializer.data, status=status.HTTP_201_CREATED)
+
+class ReferralDashboardAPIView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        profile, created = ReferralProfile.objects.get_or_create(user=request.user)
+        data = ReferralProfileSerializer(profile).data
+        return Response(data)
+
+
+class InviteFriendAPIView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    @extend_schema(
+        request=InviteFriendSerializer,   # IMPORTANT
+        responses={200: dict},
+        tags=["Referral"],
+        description="Send an invite to a friend's phone number"
+    )
+    def post(self, request):
+        serializer = InviteFriendSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+
+        phone = serializer.validated_data['phone']
+
+        profile, created = ReferralProfile.objects.get_or_create(user=request.user)
+
+        # save activity
+        activity = ReferralActivity.objects.create(
+            referrer=request.user,
+            referred_phone=phone,
+            status="invited",
+            reward_given=False
+        )
+
+        profile.invited_count += 1
+        profile.save()
+
+        return Response(
+            {"message": "Invitation sent successfully", "phone": phone},
+            status=status.HTTP_200_OK
+        )
+
+
+def give_referral_reward(referred_user):
+    referred_phone = referred_user.phone_number
+
+    # find referral activity based on phone
+    activity = ReferralActivity.objects.filter(
+        referred_phone=referred_phone,
+        reward_given=False,
+        status="registered"
+    ).first()
+
+    if not activity:
+        return  # nothing to reward
+
+    reward_amount = 100  # change anytime
+
+    # update referrer’s reward profile
+    profile, created = ReferralProfile.objects.get_or_create(user=activity.referrer)
+    profile.rewards_earned += reward_amount
+    profile.save()
+
+    # mark activity as completed
+    activity.reward_given = True
+    activity.status = "completed"
+    activity.save()
+
+
+class VehicleViewSet(viewsets.ModelViewSet):
+    serializer_class = VehicleSerializer
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get_queryset(self):
+        user = self.request.user
+        if user.is_staff:
+            return Vehicle.objects.all()
+        return Vehicle.objects.filter(customer__user=user)
+
+    def perform_create(self, serializer):
+        customer = Customer.objects.get(user=self.request.user)
+        serializer.save(customer=customer)
+
+    def destroy(self, request, *args, **kwargs):
+        vehicle = self.get_object()
+        if vehicle.customer.user != request.user:
+            return Response({"detail": "Not allowed"}, status=403)
+        return super().destroy(request, *args, **kwargs)
+
+
+from rest_framework import viewsets
+from rest_framework.permissions import AllowAny, IsAdminUser
+from django.utils import timezone
+from .models import FeaturedPromotion, Booking
+from .serializers import FeaturedPromotionSerializer
+
+class FeaturedPromotionViewSet(viewsets.ModelViewSet):
+    serializer_class = FeaturedPromotionSerializer
+
+    # Permissions: GET for all, others only for admins
+    def get_permissions(self):
+        if self.request.method in ['GET', 'HEAD', 'OPTIONS']:
+            return [AllowAny()]
+        return [IsAdminUser()]
+
+    # Queryset: returns promotions based on customer status
+    def get_queryset(self):
+        qs = FeaturedPromotion.objects.filter(is_active=True)
+        user = self.request.user
+
+        # Not logged in → only general promotions
+        if not user.is_authenticated:
+            return qs.filter(promo_type='all')
+
+        # Get customer profile
+        customer = getattr(user, 'customer_profile', None)
+        if not customer:
+            return qs.filter(promo_type='all')  # default to general promotions
+
+        # Count total bookings
+        booking_count = Booking.objects.filter(customer=customer).count()
+
+        # NEW CUSTOMER → 0 bookings
+        if booking_count == 0:
+            return qs.filter(promo_type='new')
+
+        # LOYAL CUSTOMER → 5+ bookings
+        if booking_count >= 5:
+            return qs.filter(promo_type__in=['all', 'loyal'])
+
+       # INACTIVE CUSTOMER → last booking ≥ 60 days
+        last_booking = Booking.objects.filter(customer=customer).order_by('-created_at').first()
+        if last_booking:
+            days_since_last = (timezone.now() - last_booking.created_at).days
+            if days_since_last >= 60:
+                # Show general + inactive + packages
+                return qs.filter(promo_type__in=['all', 'inactive', 'package'])
+            
+        # Default → general promotions
+        return qs.filter(promo_type='all')
+
+
+
+
+class PromotionBannerViewSet(viewsets.ModelViewSet):
+    queryset = PromotionBanner.objects.filter(is_active=True)
+    serializer_class = PromotionBannerSerializer
+    permission_classes = [AllowAny]
