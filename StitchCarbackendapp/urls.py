@@ -7,6 +7,10 @@ from rest_framework_simplejwt.views import (
     TokenObtainPairView,   
     TokenRefreshView,     
 )
+from .views import OfferViewSet, VehicleViewSet
+from .views import ReferralDashboardAPIView, InviteFriendAPIView, FeaturedPromotionViewSet, PromotionBannerViewSet
+
+
 
 router = DefaultRouter()
 router.register(r'bookings', BookingViewSet, basename='booking')
@@ -20,8 +24,18 @@ router.register(r'recalls', RecallViewSet, basename='recall')
 router.register(r'vehicle-recalls', VehicleRecallViewSet, basename='vehicle-recall')
 router.register(r'reviews', ReviewViewSet, basename='review')
 router.register(r'feedbacks', ServiceFeedbackViewSet, basename='feedback')
+router.register(r'offers', OfferViewSet, basename='offer')
+router.register(r'featured-promotions', FeaturedPromotionViewSet, basename='featured-promotions')
+router.register(r'promotion-banners', PromotionBannerViewSet)
+
+
+
 urlpatterns = [
-    path('', include(router.urls)),
+    path('api/', include(router.urls)),
+     path('bookings/check-status/<int:user_id>/',
+        BookingViewSet.as_view({'get': 'check_user_booking_status'}),
+        name='booking-check-status'
+    ),
     path('api/register/', RegisterAPIView.as_view(), name='register'),
     path('api/admin/register/', AdminRegisterAPIView.as_view(), name='admin-register'),
     path('api/login/', LoginAPIView.as_view(), name='login'),
@@ -43,5 +57,10 @@ urlpatterns = [
     path('api/admin/coupons/create/', AdminCouponCreateView.as_view(), name='admin-coupon-create'),
     path('api/admin/coupons/<int:pk>/', AdminCouponDetailView.as_view(), name='admin-coupon-detail'),
     path('api/home/recalls/', urgent_recalls_home, name='home-recalls'),
+    path("referral/dashboard/", ReferralDashboardAPIView.as_view()),
+    path("referral/invite/", InviteFriendAPIView.as_view()),
+  
+   
     
-]   
+    
+]

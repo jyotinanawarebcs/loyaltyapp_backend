@@ -8,7 +8,7 @@ from django.db import migrations, models
 class Migration(migrations.Migration):
 
     dependencies = [
-        ('StitchCarbackendapp', '0002_passwordresetcode'),
+        ('StitchCarbackendapp', '0001_initial'),
     ]
 
     operations = [

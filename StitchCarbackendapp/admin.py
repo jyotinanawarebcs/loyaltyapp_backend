@@ -11,22 +11,34 @@ User = get_user_model()
 admin.site.register(User)
 
 
+# Register your models here.
 @admin.register(Service)
 class ServiceAdmin(admin.ModelAdmin):
     list_display = ('id', 'title', 'price', 'is_popular', 'interval_days')
     list_filter = ('is_popular',)
     search_fields = ('title', 'description')
 
-
 @admin.register(Booking)
 class BookingAdmin(admin.ModelAdmin):
-    list_display = ('id', 'customer', 'get_services', 'appointment_date',
-                    'appointment_time', 'status', 'total_price')
-    list_filter = ('status', 'appointment_date', 'services')
-    search_fields = ('customer__user__username', 'services__title',
-                     'vehicle_make', 'vehicle_model')
+    list_display = (
+        'id',
+        'customer',
+        'get_services',
+        'appointment_date',
+        'appointment_time',
+        'status',
+        'total_price',
+    )
+    list_filter = ('status', 'appointment_date', 'services')  # ✅ plural field
+    search_fields = (
+        'customer__user__username',
+        'services__title',
+        'vehicle_make',
+        'vehicle_model',
+    )
 
     def get_services(self, obj):
+        """Show all related services in a comma-separated list."""
         return ", ".join([s.title for s in obj.services.all()])
     get_services.short_description = "Services"
 

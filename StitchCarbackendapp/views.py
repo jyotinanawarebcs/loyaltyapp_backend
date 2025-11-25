@@ -1,42 +1,93 @@
 from django.shortcuts import render
-
-# Create your views here.
-from rest_framework import viewsets,permissions
-from .models import Service,PasswordResetCode, Coupon, AppliedCoupon,Vehicle, Recall, VehicleRecall, RecallServiceHistory,Review,ServiceFeedback
-from .serializers import ServiceSerializer,CouponSerializer, ApplyCouponSerializer,VehicleSerializer, RecallSerializer, VehicleRecallSerializer,ReviewSerializer
-from rest_framework import viewsets
-from rest_framework.permissions import IsAdminUser, IsAuthenticated
-from .models import CustomUser
-from .serializers import CustomUserSerializer
-from rest_framework.generics import GenericAPIView
-from rest_framework.response import Response
-from rest_framework import status, permissions
-from django.contrib.auth import login
-from .serializers import  RegisterSerializer,LoginSerializer,BookingSerializer,PasswordResetRequestSerializer,PasswordResetConfirmSerializer,SendVerificationCodeSerializer,VerifyCodeSerializer,CustomUserSerializer,NotificationSerializer,ServiceFeedbackSerializer
-from .models import Booking,Customer,CustomUser,Notification
-from rest_framework_simplejwt.tokens import RefreshToken, TokenError
-from rest_framework.views import APIView
-from rest_framework import viewsets, permissions, status, filters, serializers
-from rest_framework.response import Response
-from rest_framework.decorators import action,api_view, permission_classes
-from django.contrib.auth import get_user_model
+from django.contrib.auth import login, get_user_model
 from django.contrib.auth.tokens import PasswordResetTokenGenerator
 from django.utils.http import urlsafe_base64_encode, urlsafe_base64_decode
 from django.utils.encoding import force_bytes, force_str
-from django.core.mail import send_mail
+from django.core.mail import send_mail, EmailMultiAlternatives
 from django.conf import settings
-from rest_framework.parsers import MultiPartParser, FormParser, JSONParser
-from rest_framework import generics, permissions, status
+from django.utils import timezone
+from datetime import date, timedelta
+from rest_framework import viewsets, permissions, status
 from rest_framework.response import Response
-from .models import Reward, LoyaltyPoint, RedeemedReward, EarningRule
+from rest_framework_simplejwt.authentication import JWTAuthentication
+from django.utils import timezone
+from .models import Offer
+from .serializers import OfferSerializer
+#
+from drf_spectacular.utils import extend_schema
+from rest_framework import (
+    viewsets,
+    generics,
+    permissions,
+    status,
+    filters,
+    serializers,
+)
+from rest_framework.response import Response
+from rest_framework.views import APIView
+from rest_framework.decorators import action, api_view, permission_classes
+from rest_framework.permissions import AllowAny, IsAuthenticated, IsAdminUser
+from rest_framework.parsers import MultiPartParser, FormParser, JSONParser
+from rest_framework_simplejwt.tokens import RefreshToken, TokenError
+from rest_framework_simplejwt.authentication import JWTAuthentication
+from rest_framework.generics import GenericAPIView
+
+from .permissions import IsCustomerOrReadOnly
+
+from .models import (
+    CustomUser,
+    Customer,
+    Booking,
+    Service,
+    PasswordResetCode,
+    Coupon,
+    AppliedCoupon,
+    Vehicle,
+    Recall,
+    VehicleRecall,
+    RecallServiceHistory,
+    Review,
+    ServiceFeedback,
+    Reward,
+    LoyaltyPoint,
+    RedeemedReward,
+    EarningRule,
+    Notification,
+    Offer,
+    ReferralProfile,
+    ReferralActivity,
+    FeaturedPromotion,
+    PromotionBanner,
+)
+
 from .serializers import (
+    CustomUserSerializer,
+    RegisterSerializer,
+    LoginSerializer,
+    BookingSerializer,
+    PasswordResetRequestSerializer,
+    PasswordResetConfirmSerializer,
+    SendVerificationCodeSerializer,
+    VerifyCodeSerializer,
+    NotificationSerializer,
+    ServiceFeedbackSerializer,
+    ServiceSerializer,
+    CouponSerializer,
+    ApplyCouponSerializer,
+    VehicleSerializer,
+    RecallSerializer,
+    VehicleRecallSerializer,
+    ReviewSerializer,
     LoyaltyPointSerializer,
     RewardSerializer,
     RedeemRewardSerializer,
-    EarningRuleSerializer
+    EarningRuleSerializer,
+    OfferSerializer,
+    ReferralProfileSerializer,
+    InviteFriendSerializer,
+    FeaturedPromotionSerializer,
+    PromotionBannerSerializer,
 )
-from django.utils import timezone
-
 
 @api_view(['GET'])
 @permission_classes([IsAuthenticated])
@@ -222,8 +273,36 @@ class RegisterAPIView(GenericAPIView):
 
     def post(self, request):
         serializer = self.get_serializer(data=request.data)
+
         if serializer.is_valid():
             user = serializer.save()  
+            phone = user.phone_number
+
+            # --------------------------
+            # REFERRAL REGISTRATION LOGIC
+            # --------------------------
+            referral_code = request.data.get("referral_code")
+
+            if referral_code:
+                try:
+                    ref_profile = ReferralProfile.objects.get(referral_code=referral_code)
+                    referrer = ref_profile.user
+                except ReferralProfile.DoesNotExist:
+                    referrer = None
+
+                if referrer:
+                    # Create or update referral activity
+                    activity, created = ReferralActivity.objects.get_or_create(
+                        referrer=referrer,
+                        referred_phone=phone,
+                        defaults={"status": "registered"}
+                    )
+
+                    if not created:
+                        activity.status = "registered"
+                        activity.save()
+
+            # --------------------------
 
             return Response({
                 "message": "User registered successfully",
@@ -236,6 +315,28 @@ class RegisterAPIView(GenericAPIView):
             }, status=status.HTTP_201_CREATED)
 
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+      
+# class RegisterAPIView(GenericAPIView):
+#     serializer_class = RegisterSerializer
+#     permission_classes = [permissions.AllowAny]
+
+#     def post(self, request):
+#         serializer = self.get_serializer(data=request.data)
+#         if serializer.is_valid():
+#             user = serializer.save()  
+
+#             return Response({
+#                 "message": "User registered successfully",
+#                 "user": {
+#                     "id": user.id,
+#                     "username": user.username,
+#                     "email": user.email,
+#                     "phone_number": user.phone_number,
+#                 }
+#             }, status=status.HTTP_201_CREATED)
+
+#         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
 
 class LoginAPIView(GenericAPIView):
@@ -266,7 +367,7 @@ class LoginAPIView(GenericAPIView):
             "tokens": {
                 "access": str(refresh.access_token),
                 "refresh": str(refresh),
-                
+               
             }
         }, status=status.HTTP_200_OK)
 
@@ -300,22 +401,50 @@ class BookingViewSet(viewsets.ModelViewSet):
         ctx['request'] = self.request
         return ctx
 
+    # def get_queryset(self):
+    #     qs = super().get_queryset()
+    #     user = getattr(self.request, 'user', None)
+    #     if user and user.is_authenticated and not user.is_staff:
+    #         try:
+    #             customer = Customer.objects.get(user=user)
+    #             return qs.filter(customer=customer)
+    #         except Customer.DoesNotExist:
+    #             return Booking.objects.none()
+    #     return qs
+
+
     def get_queryset(self):
         qs = super().get_queryset()
         user = getattr(self.request, 'user', None)
+
+        # filter by authenticated customer
         if user and user.is_authenticated and not user.is_staff:
             try:
                 customer = Customer.objects.get(user=user)
-                return qs.filter(customer=customer)
+                qs = qs.filter(customer=customer)
             except Customer.DoesNotExist:
                 return Booking.objects.none()
+
+        # ✅ Filter by vehicle_number if provided
+        vehicle_number = self.request.query_params.get("vehicle_number")
+        if vehicle_number:
+            qs = qs.filter(vehicle_number=vehicle_number)
+
         return qs
+
+      
+    
+    def partial_update(self, request, *args, **kwargs):
+        kwargs['partial'] = True
+        return super().update(request, *args, **kwargs)
+
 
     def perform_create(self, serializer):
         user = self.request.user
         customer = None
 
         # 1️⃣ Get customer object safely
+                # ===== 1️⃣ CUSTOMER VALIDATION =====
         if user.is_authenticated and not user.is_staff:
             try:
                 customer = Customer.objects.get(user=user)
@@ -326,17 +455,39 @@ class BookingViewSet(viewsets.ModelViewSet):
             if customer_id:
                 try:
                     customer = Customer.objects.get(id=int(customer_id))
-                except:
+                except Customer.DoesNotExist:
                     raise serializers.ValidationError("Invalid customer.")
+            else:
+                raise serializers.ValidationError("Customer not specified.")
 
-        # 2️⃣ Save booking first (so that services are attached)
+        # ===== 2️⃣ VEHICLE VALIDATION =====
+        vehicle_make = self.request.data.get("vehicle_make")
+        vehicle_model = self.request.data.get("vehicle_model")
+        vehicle_year = self.request.data.get("vehicle_year")
+
+        # Prevent duplicate active bookings for same car
+        if vehicle_make and vehicle_model and vehicle_year:
+            active_booking = Booking.objects.filter(
+                customer=customer,
+                vehicle_make=vehicle_make,
+                vehicle_model=vehicle_model,
+                vehicle_year=vehicle_year,
+                status__in=['in_progress', 'completed', 'ready_for_pickup']
+            ).first()
+
+            if active_booking:
+                raise serializers.ValidationError({
+                    "detail": "You cannot book a new service until your current service for this vehicle is completed."
+                })
+
+        # ===== 3️⃣ SAVE BOOKING FIRST =====
         booking = serializer.save(customer=customer)
 
-        # 3️⃣ Calculate total price from selected services
+        # ===== 4️⃣ CALCULATE TOTAL PRICE =====
         service_total = float(sum(float(s.price) for s in booking.services.all()))
         booking.total_price = service_total
 
-        # 4️⃣ Reward logic (free, flat, discount)
+        # ===== 5️⃣ APPLY REWARD IF ANY =====
         reward_id = self.request.data.get("reward_id")
         if reward_id:
             reward = Reward.objects.filter(id=reward_id, is_active=True).first()
@@ -347,7 +498,6 @@ class BookingViewSet(viewsets.ModelViewSet):
                 raise serializers.ValidationError("This reward can only be used for its associated service.")
 
             discount_value = float(reward.discount_value or 0)
-
             if reward.type == "discount":
                 discount_amount = service_total * discount_value if discount_value <= 1 else discount_value
                 booking.total_price = max(service_total - discount_amount, 0.0)
@@ -361,7 +511,7 @@ class BookingViewSet(viewsets.ModelViewSet):
         else:
             booking.save(update_fields=["total_price"])
 
-        # 5️⃣ Earning Rule Logic (earn points on spending)
+        # ===== 6️⃣ EARNING RULE (LOYALTY POINTS) =====
         earning_rule_id = self.request.data.get("earningRuleId")
         if earning_rule_id:
             try:
@@ -370,16 +520,16 @@ class BookingViewSet(viewsets.ModelViewSet):
                 earning_rule = None
 
             if earning_rule:
-                # Get total spend and check if qualifies
                 total_spend = float(booking.total_price or 0)
                 if total_spend >= earning_rule.amount_base:
                     points_to_award = int((total_spend / earning_rule.amount_base) * earning_rule.points)
-
                     if points_to_award > 0:
                         loyalty, _ = LoyaltyPoint.objects.get_or_create(customer=booking.customer)
                         loyalty.add_points(points_to_award)
+
             booking = serializer.save(customer=customer, earning_rule=earning_rule)
-        # 6️⃣ Recall auto-complete logic (keep your existing one safely)
+
+        # ===== 7️⃣ VEHICLE RECALL AUTO-COMPLETE =====
         try:
             notes = str(self.request.data.get("notes") or "").lower()
             recall_flag = self.request.data.get("is_recall_service")
@@ -408,13 +558,29 @@ class BookingViewSet(viewsets.ModelViewSet):
                         remarks="Auto-completed via booking",
                         is_repeat_service=(recall.service_count > 1)
                     )
-
         except Exception:
-            # Fail-safe: booking should always succeed
+            # Fail-safe: booking should always succeed even if recall fails
             pass
 
+        # ===== 8️⃣ FINAL SAVE & RETURN =====
         booking.refresh_from_db()
         return booking
+
+
+    def update(self, request, *args, **kwargs):
+        instance = self.get_object()
+        old_status = instance.status  # before update
+
+        response = super().update(request, *args, **kwargs)
+
+        new_status = response.data.get("status")
+
+        # reward only when booking marked completed
+        if old_status != "completed" and new_status == "completed":
+            give_referral_reward(instance.customer.user)
+
+        return response
+    
 
     @action(detail=True, methods=['post'], permission_classes=[permissions.IsAuthenticated])
     def cancel(self, request, pk=None):
@@ -424,7 +590,28 @@ class BookingViewSet(viewsets.ModelViewSet):
         booking.status = 'cancelled'
         booking.save()
         return Response(self.get_serializer(booking).data)
+    
+    @action(detail=False, methods=['get'], url_path='check-status/(?P<user_id>[^/.]+)')
+    def check_user_booking_status(self, request, user_id=None):
+        try:
+            booking = Booking.objects.filter(customer__user_id=user_id).order_by('-id').first()
 
+            if not booking:
+                return Response(
+                    {'status': 'no_booking'},
+                    status=status.HTTP_200_OK
+                )
+
+            return Response(
+                {'status': booking.status},
+                status=status.HTTP_200_OK
+            )
+
+        except Exception as e:
+            return Response(
+                {'error': str(e)},
+                status=status.HTTP_400_BAD_REQUEST
+            )
     # ✅ Add this method only
     def list(self, request, *args, **kwargs):
         user_agent = request.META.get('HTTP_USER_AGENT', '').lower()
@@ -570,6 +757,30 @@ class RewardViewSet(viewsets.ModelViewSet):
     def get_permissions(self):
         if self.action in ['list', 'retrieve']:
             permission_classes = [permissions.IsAuthenticated]
+    
+
+
+
+
+
+class OfferViewSet(viewsets.ModelViewSet):
+    """
+    CRUD API for Offer model:
+    - Anyone can GET (list/retrieve) active offers.
+    - Only admin users can POST, PUT, PATCH, DELETE.
+    - Supports bulk creation for admin users.
+    """
+    serializer_class = OfferSerializer
+    authentication_classes = [JWTAuthentication]
+
+    def get_queryset(self):
+        if self.request.user.is_staff:
+            return Offer.objects.all().order_by('-valid_from')
+        return Offer.objects.filter(is_active=True, valid_to__gte=timezone.now()).order_by('-valid_from')
+
+    def get_permissions(self):
+        if self.action in ['list', 'retrieve']:
+            permission_classes = [permissions.AllowAny]
         else:
             permission_classes = [permissions.IsAdminUser]
         return [permission() for permission in permission_classes]
@@ -681,11 +892,95 @@ def urgent_recalls_home(request):
         for r in recalls
     ]
     return Response(data)
+    @extend_schema(
+        request=OfferSerializer(many=True),
+        responses={201: OfferSerializer(many=True)},
+        summary="Create multiple offers",
+        description="Create multiple offers for services at once"
+    )
+    def create(self, request, *args, **kwargs):
+        """
+        Override create to support both single and bulk creation.
+        """
+        many = isinstance(request.data, list)
+        serializer = self.get_serializer(data=request.data, many=many)
+        serializer.is_valid(raise_exception=True)
+        self.perform_create(serializer)
+        return Response(serializer.data, status=status.HTTP_201_CREATED)
+
+class ReferralDashboardAPIView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        profile, created = ReferralProfile.objects.get_or_create(user=request.user)
+        data = ReferralProfileSerializer(profile).data
+        return Response(data)
+
+
+class InviteFriendAPIView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    @extend_schema(
+        request=InviteFriendSerializer,   # IMPORTANT
+        responses={200: dict},
+        tags=["Referral"],
+        description="Send an invite to a friend's phone number"
+    )
+    def post(self, request):
+        serializer = InviteFriendSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+
+        phone = serializer.validated_data['phone']
+
+        profile, created = ReferralProfile.objects.get_or_create(user=request.user)
+
+        # save activity
+        activity = ReferralActivity.objects.create(
+            referrer=request.user,
+            referred_phone=phone,
+            status="invited",
+            reward_given=False
+        )
+
+        profile.invited_count += 1
+        profile.save()
+
+        return Response(
+            {"message": "Invitation sent successfully", "phone": phone},
+            status=status.HTTP_200_OK
+        )
+
+
+def give_referral_reward(referred_user):
+    referred_phone = referred_user.phone_number
+
+    # find referral activity based on phone
+    activity = ReferralActivity.objects.filter(
+        referred_phone=referred_phone,
+        reward_given=False,
+        status="registered"
+    ).first()
+
+    if not activity:
+        return  # nothing to reward
+
+    reward_amount = 100  # change anytime
+
+    # update referrer’s reward profile
+    profile, created = ReferralProfile.objects.get_or_create(user=activity.referrer)
+    profile.rewards_earned += reward_amount
+    profile.save()
+
+    # mark activity as completed
+    activity.reward_given = True
+    activity.status = "completed"
+    activity.save()
+
 
 class VehicleViewSet(viewsets.ModelViewSet):
     serializer_class = VehicleSerializer
     permission_classes = [permissions.IsAuthenticated]
-
+    
     def get_queryset(self):
         user = self.request.user
         if user.is_staff:
@@ -694,8 +989,14 @@ class VehicleViewSet(viewsets.ModelViewSet):
 
     def perform_create(self, serializer):
         customer = self.request.user.customer_profile
+        # customer = Customer.objects.get(user=self.request.user)
         serializer.save(customer=customer)
 
+    def destroy(self, request, *args, **kwargs):
+        vehicle = self.get_object()
+        if vehicle.customer.user != request.user:
+            return Response({"detail": "Not allowed"}, status=403)
+        return super().destroy(request, *args, **kwargs)
 
 class RecallViewSet(viewsets.ModelViewSet):
     queryset = Recall.objects.all()
@@ -935,3 +1236,64 @@ class ServiceFeedbackViewSet(viewsets.ModelViewSet):
     #         "service_count": recall_instance.service_count,
     #         "last_service_date": recall_instance.last_service_date
     #     }, status=status.HTTP_200_OK)
+       
+
+
+from rest_framework import viewsets
+from rest_framework.permissions import AllowAny, IsAdminUser
+from django.utils import timezone
+from .models import FeaturedPromotion, Booking
+from .serializers import FeaturedPromotionSerializer
+
+class FeaturedPromotionViewSet(viewsets.ModelViewSet):
+    serializer_class = FeaturedPromotionSerializer
+
+    # Permissions: GET for all, others only for admins
+    def get_permissions(self):
+        if self.request.method in ['GET', 'HEAD', 'OPTIONS']:
+            return [AllowAny()]
+        return [IsAdminUser()]
+
+    # Queryset: returns promotions based on customer status
+    def get_queryset(self):
+        qs = FeaturedPromotion.objects.filter(is_active=True)
+        user = self.request.user
+
+        # Not logged in → only general promotions
+        if not user.is_authenticated:
+            return qs.filter(promo_type='all')
+
+        # Get customer profile
+        customer = getattr(user, 'customer_profile', None)
+        if not customer:
+            return qs.filter(promo_type='all')  # default to general promotions
+
+        # Count total bookings
+        booking_count = Booking.objects.filter(customer=customer).count()
+
+        # NEW CUSTOMER → 0 bookings
+        if booking_count == 0:
+            return qs.filter(promo_type='new')
+
+        # LOYAL CUSTOMER → 5+ bookings
+        if booking_count >= 5:
+            return qs.filter(promo_type__in=['all', 'loyal'])
+
+       # INACTIVE CUSTOMER → last booking ≥ 60 days
+        last_booking = Booking.objects.filter(customer=customer).order_by('-created_at').first()
+        if last_booking:
+            days_since_last = (timezone.now() - last_booking.created_at).days
+            if days_since_last >= 60:
+                # Show general + inactive + packages
+                return qs.filter(promo_type__in=['all', 'inactive', 'package'])
+            
+        # Default → general promotions
+        return qs.filter(promo_type='all')
+
+
+
+
+class PromotionBannerViewSet(viewsets.ModelViewSet):
+    queryset = PromotionBanner.objects.filter(is_active=True)
+    serializer_class = PromotionBannerSerializer
+    permission_classes = [AllowAny]
