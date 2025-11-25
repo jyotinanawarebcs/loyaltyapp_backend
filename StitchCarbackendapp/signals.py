@@ -2,7 +2,7 @@
 from django.db.models.signals import post_save
 from django.dispatch import receiver
 from django.db import transaction
-from .models import Booking, LoyaltyPoint, Reward, Customer
+from .models import Booking, LoyaltyPoint, Reward, Customer,EarningRule,Review
 from django.contrib.auth import get_user_model
 
 def calculate_points(amount):
@@ -39,11 +39,17 @@ def handle_loyalty_on_booking(sender, instance, created, **kwargs):
                 raise ValueError("Insufficient points for reward redemption.")
 
         # ✅ Award points for normal bookings
-        elif created and not instance.reward:
-            amount = float(instance.total_price or 0)
-            points_to_award = calculate_points(amount)
-            if points_to_award > 0:
-                loyalty.add_points(points_to_award)
+       
+
+        # elif created and not instance.reward:
+        #     amount = float(instance.total_price or 0)
+
+        #     rule = instance.earning_rule or EarningRule.objects.filter(is_active=True).first()
+        #     if rule and amount >= rule.amount_base:
+        #         points_to_award = int((amount / rule.amount_base) * rule.points)
+        #         if points_to_award > 0:
+        #             loyalty.add_points(points_to_award)
+        #             print(f"✅ Added {points_to_award} points for {instance.customer.user.username}")        
 
         # ✅ Cashback after service completion
         elif instance.status == 'completed' and instance.reward and instance.reward.type == 'cashback':
@@ -51,6 +57,23 @@ def handle_loyalty_on_booking(sender, instance, created, **kwargs):
             cashback_points = int(cashback_value * 10)
             if cashback_points > 0:
                 loyalty.add_points(cashback_points)
+
+@receiver(post_save, sender=Review)
+def award_points_for_review(sender, instance, created, **kwargs):
+    """
+    📝 3. Award 50 points for every new review submitted by a customer.
+    """
+    if not created:
+        return
+
+    try:
+        loyalty, _ = LoyaltyPoint.objects.select_for_update().get_or_create(
+            customer=instance.customer
+        )
+        loyalty.add_points(50)
+    except Exception as e:
+        print(f"[Review Points Error] {e}")
+
 
 # # loyaltyapp/signals.py
 # from django.db.models.signals import post_save
@@ -105,18 +128,3 @@ def handle_loyalty_on_booking(sender, instance, created, **kwargs):
 #                 loyalty.add_points(points_to_award)
 
 
-# # @receiver(post_save, sender=Review)
-# # def award_points_for_review(sender, instance, created, **kwargs):
-# #     """
-# #     📝 3. Award 50 points for every new review submitted by a customer.
-# #     """
-# #     if not created:
-# #         return
-
-# #     try:
-# #         loyalty, _ = LoyaltyPoint.objects.select_for_update().get_or_create(
-# #             customer=instance.customer
-# #         )
-# #         loyalty.add_points(50)
-# #     except Exception as e:
-# #         print(f"[Review Points Error] {e}")

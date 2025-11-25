@@ -65,11 +65,11 @@ class Offer(models.Model):
     
 class Booking(models.Model):
     STATUS_CHOICES = [
-        ('booked', 'Booked'),            # user booked
-        ('in_progress', 'In Progress'),  # admin confirmed / service ongoing
-        ('completed', 'Completed'),      # service done
-        ('ready_for_pickup', 'Ready for Pickup'),  # car ready
-        ('cancelled', 'Cancelled'),      # cancelled
+        ('booked', 'Booked'),           
+        ('in_progress', 'In Progress'),  
+        ('completed', 'Completed'),     
+        ('ready_for_pickup', 'Ready for Pickup'), 
+        ('cancelled', 'Cancelled'),      
     ]
 
     customer = models.ForeignKey("Customer", on_delete=models.CASCADE, related_name='bookings')
@@ -86,6 +86,9 @@ class Booking(models.Model):
     status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='booked')
     notes = models.TextField(blank=True, null=True)
     is_recall_service = models.BooleanField(default=False)
+    earning_rule = models.ForeignKey("EarningRule", on_delete=models.SET_NULL, null=True, blank=True)
+    points_awarded = models.IntegerField(default=0)
+
 
     def __str__(self):
         # ✅ Fix: Booking can have *multiple services*, so show all titles
@@ -188,6 +191,7 @@ class RedeemedReward(models.Model):
 class EarningRule(models.Model):
     title = models.CharField(max_length=100)
     description = models.TextField()
+    min_spend = models.DecimalField(max_digits=10, decimal_places=2,blank=True, null=True, help_text="Minimum spend to qualify for points (optional).")
     points = models.PositiveIntegerField(default=0, help_text="Points for this action (may be used as a fixed bonus).")
     amount_base = models.IntegerField(default=0)      
     icon = models.CharField(max_length=50, blank=True, null=True, help_text="frontend icon name (optional)")
@@ -238,7 +242,7 @@ class Coupon(models.Model):
         if not self.is_active:
             return False
         if not self.expiry_date:
-            return False  # 🔒 Prevent comparison with None
+            return False  
         return timezone.now().date() <= self.expiry_date
 
 class AppliedCoupon(models.Model):
@@ -364,3 +368,32 @@ class RecallServiceHistory(models.Model):
 
     def __str__(self):
         return f"{self.vehicle_recall.vehicle} - {self.vehicle_recall.recall.title} ({'Repeat' if self.is_repeat_service else 'Initial'})"
+
+
+class Review(models.Model):
+    customer = models.ForeignKey('Customer', on_delete=models.CASCADE, related_name='reviews')
+    booking = models.ForeignKey('Booking', on_delete=models.CASCADE, related_name='reviews', null=True, blank=True)
+    rating = models.PositiveIntegerField(default=5)
+    comment = models.TextField()
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    def __str__(self):
+        return f"{self.customer.user.username} - {self.rating}⭐"
+
+
+
+class ServiceFeedback(models.Model):
+    customer = models.ForeignKey('Customer', on_delete=models.CASCADE, related_name='service_feedbacks')
+    booking = models.ForeignKey('Booking', on_delete=models.CASCADE, related_name='feedback')
+    overall_rating = models.PositiveSmallIntegerField(default=0)
+    punctuality_rating = models.PositiveSmallIntegerField(default=0)
+    service_quality_rating = models.PositiveSmallIntegerField(default=0)
+    communication_rating = models.PositiveSmallIntegerField(default=0)
+    review = models.TextField(blank=True, null=True)
+    submitted_at = models.DateTimeField(auto_now_add=True)
+    
+    class Meta:
+        unique_together = ('customer', 'booking')  
+    
+    def __str__(self):
+        return f"{self.customer.user.username} - {self.booking.id} ({self.overall_rating} stars)"

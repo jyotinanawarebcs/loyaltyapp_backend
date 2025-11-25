@@ -1,7 +1,7 @@
 from django.urls import path, include
 from . import views as app_views
 from rest_framework.routers import DefaultRouter
-from .views import ServiceViewSet,RegisterAPIView,LoginAPIView,LogoutAPIView,PasswordResetRequestAPIView,PasswordResetConfirmAPIView,AdminRegisterAPIView,SendVerificationCodeAPIView,VerifyCodeAPIView,UserPointsView, RewardViewSet, RedeemRewardView, EarningRuleViewSet
+from .views import ServiceViewSet,RegisterAPIView,LoginAPIView,LogoutAPIView,PasswordResetRequestAPIView,PasswordResetConfirmAPIView,AdminRegisterAPIView,SendVerificationCodeAPIView,VerifyCodeAPIView,UserPointsView, RewardViewSet, RedeemRewardView, EarningRuleViewSet,ReviewViewSet,ServiceFeedbackViewSet
 from .views import AdminServiceViewSet,CustomUserViewSet,BookingViewSet,CouponListView, ApplyCouponView,AdminCouponListView, AdminCouponCreateView, AdminCouponDetailView,VehicleViewSet, RecallViewSet, VehicleRecallViewSet, urgent_recalls_home 
 from rest_framework_simplejwt.views import (
     TokenObtainPairView,   
@@ -18,6 +18,8 @@ router.register(r'earn-rules', EarningRuleViewSet)
 router.register(r'vehicles', VehicleViewSet, basename='vehicle')
 router.register(r'recalls', RecallViewSet, basename='recall')
 router.register(r'vehicle-recalls', VehicleRecallViewSet, basename='vehicle-recall')
+router.register(r'reviews', ReviewViewSet, basename='review')
+router.register(r'feedbacks', ServiceFeedbackViewSet, basename='feedback')
 urlpatterns = [
     path('', include(router.urls)),
     path('api/register/', RegisterAPIView.as_view(), name='register'),
@@ -41,5 +43,5 @@ urlpatterns = [
     path('api/admin/coupons/create/', AdminCouponCreateView.as_view(), name='admin-coupon-create'),
     path('api/admin/coupons/<int:pk>/', AdminCouponDetailView.as_view(), name='admin-coupon-detail'),
     path('api/home/recalls/', urgent_recalls_home, name='home-recalls'),
-
+    
 ]   

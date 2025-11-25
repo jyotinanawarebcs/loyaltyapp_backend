@@ -2,8 +2,8 @@ from django.shortcuts import render
 
 # Create your views here.
 from rest_framework import viewsets,permissions
-from .models import Service,PasswordResetCode, Coupon, AppliedCoupon,Vehicle, Recall, VehicleRecall, RecallServiceHistory
-from .serializers import ServiceSerializer,CouponSerializer, ApplyCouponSerializer,VehicleSerializer, RecallSerializer, VehicleRecallSerializer
+from .models import Service,PasswordResetCode, Coupon, AppliedCoupon,Vehicle, Recall, VehicleRecall, RecallServiceHistory,Review,ServiceFeedback
+from .serializers import ServiceSerializer,CouponSerializer, ApplyCouponSerializer,VehicleSerializer, RecallSerializer, VehicleRecallSerializer,ReviewSerializer
 from rest_framework import viewsets
 from rest_framework.permissions import IsAdminUser, IsAuthenticated
 from .models import CustomUser
@@ -12,7 +12,7 @@ from rest_framework.generics import GenericAPIView
 from rest_framework.response import Response
 from rest_framework import status, permissions
 from django.contrib.auth import login
-from .serializers import  RegisterSerializer,LoginSerializer,BookingSerializer,PasswordResetRequestSerializer,PasswordResetConfirmSerializer,SendVerificationCodeSerializer,VerifyCodeSerializer,CustomUserSerializer,NotificationSerializer
+from .serializers import  RegisterSerializer,LoginSerializer,BookingSerializer,PasswordResetRequestSerializer,PasswordResetConfirmSerializer,SendVerificationCodeSerializer,VerifyCodeSerializer,CustomUserSerializer,NotificationSerializer,ServiceFeedbackSerializer
 from .models import Booking,Customer,CustomUser,Notification
 from rest_framework_simplejwt.tokens import RefreshToken, TokenError
 from rest_framework.views import APIView
@@ -287,7 +287,7 @@ class LogoutAPIView(APIView):
             return Response({"error": str(e)}, status=status.HTTP_400_BAD_REQUEST)
 
 class BookingViewSet(viewsets.ModelViewSet):
-    # queryset = Booking.objects.all().select_related('customer__user',  'offer')
+    
     queryset = Booking.objects.all().select_related('customer__user', 'offer').prefetch_related('services')
     serializer_class = BookingSerializer
     permission_classes = [permissions.IsAuthenticatedOrReadOnly, IsCustomerOrReadOnly]
@@ -315,7 +315,7 @@ class BookingViewSet(viewsets.ModelViewSet):
         user = self.request.user
         customer = None
 
-        # Get customer
+        # 1️⃣ Get customer object safely
         if user.is_authenticated and not user.is_staff:
             try:
                 customer = Customer.objects.get(user=user)
@@ -328,18 +328,16 @@ class BookingViewSet(viewsets.ModelViewSet):
                     customer = Customer.objects.get(id=int(customer_id))
                 except:
                     raise serializers.ValidationError("Invalid customer.")
-        reward_id = self.request.data.get("reward_id")
-        reward = None
 
-        # Save booking first (so services are attached properly)
+        # 2️⃣ Save booking first (so that services are attached)
         booking = serializer.save(customer=customer)
 
-        # Calculate total from selected services
-        # Calculate total from selected services
+        # 3️⃣ Calculate total price from selected services
         service_total = float(sum(float(s.price) for s in booking.services.all()))
         booking.total_price = service_total
 
-        # If reward applied
+        # 4️⃣ Reward logic (free, flat, discount)
+        reward_id = self.request.data.get("reward_id")
         if reward_id:
             reward = Reward.objects.filter(id=reward_id, is_active=True).first()
             if not reward:
@@ -351,14 +349,10 @@ class BookingViewSet(viewsets.ModelViewSet):
             discount_value = float(reward.discount_value or 0)
 
             if reward.type == "discount":
-                discount_amount = (
-                    service_total * discount_value if discount_value <= 1 else discount_value
-                )
+                discount_amount = service_total * discount_value if discount_value <= 1 else discount_value
                 booking.total_price = max(service_total - discount_amount, 0.0)
-
             elif reward.type == "flat":
                 booking.total_price = max(service_total - discount_value, 0.0)
-
             elif reward.type == "free":
                 booking.total_price = 0.0
 
@@ -367,55 +361,61 @@ class BookingViewSet(viewsets.ModelViewSet):
         else:
             booking.save(update_fields=["total_price"])
 
+        # 5️⃣ Earning Rule Logic (earn points on spending)
+        earning_rule_id = self.request.data.get("earningRuleId")
+        if earning_rule_id:
+            try:
+                earning_rule = EarningRule.objects.get(id=earning_rule_id, is_active=True)
+            except EarningRule.DoesNotExist:
+                earning_rule = None
 
-        # AUTO-COMPLETE RECALL — 100% SAFE (NO CRASH EVER)
+            if earning_rule:
+                # Get total spend and check if qualifies
+                total_spend = float(booking.total_price or 0)
+                if total_spend >= earning_rule.amount_base:
+                    points_to_award = int((total_spend / earning_rule.amount_base) * earning_rule.points)
+
+                    if points_to_award > 0:
+                        loyalty, _ = LoyaltyPoint.objects.get_or_create(customer=booking.customer)
+                        loyalty.add_points(points_to_award)
+            booking = serializer.save(customer=customer, earning_rule=earning_rule)
+        # 6️⃣ Recall auto-complete logic (keep your existing one safely)
         try:
-            # Safely get notes
             notes = str(self.request.data.get("notes") or "").lower()
-
-            # Safely get is_recall_service (handles string "true", bool, etc.)
             recall_flag = self.request.data.get("is_recall_service")
             is_recall_service = recall_flag in (True, "true", "True", "1", 1)
-
-            # Safely get vehicle info
             vehicle_make = str(self.request.data.get("vehicle_make") or "").strip()
             vehicle_model = str(self.request.data.get("vehicle_model") or "").strip()
 
-            # Only run if it's a recall booking
-            if not (is_recall_service or "recall" in notes):
-                return booking
+            if (is_recall_service or "recall" in notes) and vehicle_make and vehicle_model:
+                recall = VehicleRecall.objects.filter(
+                    vehicle__customer=customer,
+                    vehicle__make__iexact=vehicle_make,
+                    vehicle__model__iexact=vehicle_model,
+                    status="active"
+                ).first()
 
-            if not vehicle_make or not vehicle_model:
-                return booking
+                if recall:
+                    recall.status = "completed"
+                    recall.last_service_date = timezone.now()
+                    recall.service_count += 1
+                    recall.save()
 
-            # Find active recall and complete it
-            recall = VehicleRecall.objects.filter(
-                vehicle__customer=customer,
-                vehicle__make__iexact=vehicle_make,
-                vehicle__model__iexact=vehicle_model,
-                status="active"
-            ).first()
-
-            if recall:
-                recall.status = "completed"
-                recall.last_service_date = timezone.now()
-                recall.service_count += 1
-                recall.save()
-
-                # Optional: Save history (keep this — it's important)
-                RecallServiceHistory.objects.create(
-                    vehicle_recall=recall,
-                    customer=customer,
-                    booking=booking,
-                    remarks="Auto-completed via booking",
-                    is_repeat_service=(recall.service_count > 1)
-                )
+                    RecallServiceHistory.objects.create(
+                        vehicle_recall=recall,
+                        customer=customer,
+                        booking=booking,
+                        remarks="Auto-completed via booking",
+                        is_repeat_service=(recall.service_count > 1)
+                    )
 
         except Exception:
-            # If anything fails → IGNORE IT. Booking must succeed.
+            # Fail-safe: booking should always succeed
             pass
+
         booking.refresh_from_db()
         return booking
+
     @action(detail=True, methods=['post'], permission_classes=[permissions.IsAuthenticated])
     def cancel(self, request, pk=None):
         booking = self.get_object()
@@ -839,6 +839,58 @@ class VehicleRecallViewSet(viewsets.ModelViewSet):
                 "service_count": recall_instance.service_count,
                 "last_service_date": recall_instance.last_service_date
 })
+
+class ReviewViewSet(viewsets.ModelViewSet):
+    queryset = Review.objects.all().select_related('customer__user')
+    serializer_class = ReviewSerializer
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get_queryset(self):
+        user = self.request.user
+        if user.is_staff:
+            return Review.objects.all()
+        try:
+            customer = user.customer_profile
+            return Review.objects.filter(customer=customer)
+        except:
+            return Review.objects.none()
+
+
+class ServiceFeedbackViewSet(viewsets.ModelViewSet):
+    queryset = ServiceFeedback.objects.all().order_by('-submitted_at')
+    serializer_class = ServiceFeedbackSerializer
+    permission_classes = [permissions.IsAuthenticated]
+
+    def perform_create(self, serializer):
+        user = self.request.user
+        try:
+            customer = Customer.objects.get(user=user)
+        except Customer.DoesNotExist:
+            raise serializers.ValidationError("Customer profile not found.")
+
+        booking = serializer.validated_data['booking']
+
+        # ✅ Ensure the booking belongs to this customer
+        if booking.customer != customer:
+            raise serializers.ValidationError("You cannot submit feedback for another user's booking.")
+
+        # ✅ Allow feedback only if booking is completed
+        if booking.status != 'completed':
+            raise serializers.ValidationError("You can only submit feedback after your booking is completed.")
+
+        # ✅ Prevent duplicate feedback
+        if ServiceFeedback.objects.filter(customer=customer, booking=booking).exists():
+            raise serializers.ValidationError("Feedback already submitted for this booking.")
+
+        serializer.save(customer=customer)
+
+
+    def get_queryset(self):
+        # Limit to user's feedback only
+        user = self.request.user
+        if user.is_staff:
+            return ServiceFeedback.objects.all().order_by('-submitted_at')
+        return ServiceFeedback.objects.filter(customer__user=user).order_by('-submitted_at')            
     # @action(detail=True, methods=['post'])
     # def mark_completed(self, request, pk=None):
     #     """

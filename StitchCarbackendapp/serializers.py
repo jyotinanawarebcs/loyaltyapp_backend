@@ -1,11 +1,11 @@
 from rest_framework import serializers
-from .models import Service,CustomUser,Booking,Customer,Offer,Reward, LoyaltyPoint, RedeemedReward, EarningRule, Notification, Coupon, AppliedCoupon, Booking, Service,Vehicle, Recall, VehicleRecall, RecallServiceHistory
+from .models import Service,CustomUser,Booking,Customer,Offer,Reward, LoyaltyPoint, RedeemedReward, EarningRule, Notification, Coupon, AppliedCoupon, Booking, Service,Vehicle, Recall, VehicleRecall, RecallServiceHistory,Review,ServiceFeedback
 from django.contrib.auth import authenticate
 from rest_framework_simplejwt.tokens import RefreshToken
 from datetime import date, datetime
 from django.contrib.auth import get_user_model
 from rest_framework.decorators import action
-
+from django.utils import timezone
 User = get_user_model()
 
 class PasswordResetRequestSerializer(serializers.Serializer):
@@ -28,7 +28,7 @@ class ServiceSerializer(serializers.ModelSerializer):
         model = Service
         fields = '__all__' 
 class BookingSerializer(serializers.ModelSerializer):
-    # show related object titles for readability (read-only)
+   
     customer = serializers.PrimaryKeyRelatedField(queryset=Customer.objects.all(), required=False)
     services = serializers.PrimaryKeyRelatedField(queryset=Service.objects.all(), many=True)
     offer = serializers.PrimaryKeyRelatedField(queryset=Offer.objects.all(), allow_null=True, required=False)
@@ -393,7 +393,7 @@ class RedeemRewardSerializer(serializers.Serializer):
 class EarningRuleSerializer(serializers.ModelSerializer):
     class Meta:
         model = EarningRule
-        fields = ['id', 'title', 'description', 'points', 'icon', 'display_order']        
+        fields = ['id', 'title', 'description', 'points', 'icon', 'display_order','amount_base','min_spend']        
 
 class NotificationSerializer(serializers.ModelSerializer):
     created_at = serializers.DateTimeField(format="%Y-%m-%d %H:%M:%S", read_only=True)
@@ -402,17 +402,23 @@ class NotificationSerializer(serializers.ModelSerializer):
         fields = ['id', 'title', 'message', 'is_read', 'created_at']     
 
 class CouponSerializer(serializers.ModelSerializer):
+    applicable_service_title = serializers.CharField(source='applicable_service.title', read_only=True, allow_null=True)
+    usage_restriction = serializers.SerializerMethodField()
+
+
     class Meta:
         model = Coupon
-        fields = ['id', 'code', 'title', 'description', 'discount_type', 'discount_value', 'expiry_date', 'applicable_service']
-
+        fields = ['id', 'code', 'title', 'description', 'discount_type', 'discount_value', 'expiry_date', 'applicable_service','applicable_service_title', 'usage_restriction']
+    def get_usage_restriction(self, obj):
+        if obj.applicable_service:
+            return f"Only for {obj.applicable_service.title}"
+        return "Can be used on any service"
 
 class ApplyCouponSerializer(serializers.Serializer):
     coupon_code = serializers.CharField()
     booking_id = serializers.IntegerField()
-
+    
     def validate(self, data):
-        from django.utils import timezone
         user = self.context['request'].user
         coupon_code = data['coupon_code']
         booking_id = data['booking_id']
@@ -420,20 +426,53 @@ class ApplyCouponSerializer(serializers.Serializer):
         try:
             coupon = Coupon.objects.get(code=coupon_code, is_active=True)
         except Coupon.DoesNotExist:
-            raise serializers.ValidationError("Invalid coupon code.")
+            raise serializers.ValidationError("Invalid or expired coupon code.")
 
-        if coupon.expiry_date < timezone.now().date():
+        if coupon.expiry_date and coupon.expiry_date < timezone.now().date():
             raise serializers.ValidationError("Coupon has expired.")
 
-    
         try:
             booking = Booking.objects.get(id=booking_id, customer__user=user)
         except Booking.DoesNotExist:
-            raise serializers.ValidationError("Booking not found for this user.")
+            raise serializers.ValidationError("Booking not found or access denied.")
+
+        # KEY FIX: Check if coupon is restricted to a specific service
+        if coupon.applicable_service:
+            # Check if ANY of the booking's services match the allowed one
+            if not booking.services.filter(id=coupon.applicable_service.id).exists():
+                raise serializers.ValidationError(
+                    f"This coupon is only valid for '{coupon.applicable_service.title}' service."
+                )
+
+        # Optional: Prevent reuse (if you want one-time use per customer)
+        if AppliedCoupon.objects.filter(customer=booking.customer, coupon=coupon).exists():
+            raise serializers.ValidationError("You have already used this coupon.")
 
         data['coupon'] = coupon
         data['booking'] = booking
         return data
+    # def validate(self, data):
+    #     user = self.context['request'].user
+    #     coupon_code = data['coupon_code']
+    #     booking_id = data['booking_id']
+
+    #     try:
+    #         coupon = Coupon.objects.get(code=coupon_code, is_active=True)
+    #     except Coupon.DoesNotExist:
+    #         raise serializers.ValidationError("Invalid coupon code.")
+
+    #     if coupon.expiry_date < timezone.now().date():
+    #         raise serializers.ValidationError("Coupon has expired.")
+
+    
+    #     try:
+    #         booking = Booking.objects.get(id=booking_id, customer__user=user)
+    #     except Booking.DoesNotExist:
+    #         raise serializers.ValidationError("Booking not found for this user.")
+
+    #     data['coupon'] = coupon
+    #     data['booking'] = booking
+    #     return data
 
     def create(self, validated_data):
         customer = validated_data['booking'].customer
@@ -532,3 +571,48 @@ class VehicleRecallSerializer(serializers.ModelSerializer):
 
     def get_already_serviced(self, obj):
         return obj.status == 'completed'
+
+class ReviewSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = Review
+        fields = ['id', 'customer', 'booking', 'rating', 'comment', 'created_at']
+        read_only_fields = ['id', 'created_at', 'customer']
+
+    def create(self, validated_data):
+        request = self.context['request']
+        customer = request.user.customer_profile
+        review = Review.objects.create(customer=customer, **validated_data)
+        return review
+
+
+class ServiceFeedbackSerializer(serializers.ModelSerializer):
+    customer_name = serializers.CharField(source='customer.user.username', read_only=True)
+    service_titles = serializers.SerializerMethodField()
+
+    class Meta:
+        model = ServiceFeedback
+        fields = [
+            'id',
+            'customer',
+            'booking',
+            'overall_rating',
+            'punctuality_rating',
+            'service_quality_rating',
+            'communication_rating',
+            'review',
+            'submitted_at',
+            'customer_name',
+            'service_titles',
+        ]
+        read_only_fields = ['submitted_at', 'customer_name', 'service_titles']
+
+    def get_service_titles(self, obj):
+        return [service.title for service in obj.booking.services.all()]
+
+    def validate(self, data):
+        # Restrict 1 feedback per booking per customer
+        customer = data.get('customer')
+        booking = data.get('booking')
+        if ServiceFeedback.objects.filter(customer=customer, booking=booking).exists():
+            raise serializers.ValidationError("Feedback already submitted for this booking.")
+        return data
