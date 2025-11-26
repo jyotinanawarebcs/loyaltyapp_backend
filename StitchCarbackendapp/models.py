@@ -70,7 +70,7 @@ class Service(models.Model):
     price = models.DecimalField(max_digits=8, decimal_places=2)
     image = models.ImageField(upload_to='services/')
     is_popular = models.BooleanField(default=False)
-
+    interval_days = models.PositiveIntegerField(default=0)
     def __str__(self):
         return self.title
 
@@ -107,6 +107,7 @@ class Booking(models.Model):
     services = models.ManyToManyField("Service", related_name='bookings')
     vehicle = models.ForeignKey("Vehicle", on_delete=models.CASCADE, null=True, blank=True)
     offer = models.ForeignKey("Offer", on_delete=models.SET_NULL, null=True, blank=True, related_name='bookings')
+    reward = models.ForeignKey('Reward', on_delete=models.SET_NULL, null=True, blank=True)
     booking_date = models.DateTimeField(default=timezone.now)
     appointment_date = models.DateField()
     appointment_time = models.TimeField()
@@ -117,6 +118,10 @@ class Booking(models.Model):
     total_price = models.DecimalField(max_digits=10, decimal_places=2, default=0.0)
     status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='booked')
     notes = models.TextField(blank=True, null=True)
+    is_recall_service = models.BooleanField(default=False)
+    earning_rule = models.ForeignKey("EarningRule", on_delete=models.SET_NULL, null=True, blank=True)
+    points_awarded = models.IntegerField(default=0)
+
 
     def __str__(self):
         # ✅ Fix: Booking can have *multiple services*, so show all titles
@@ -145,7 +150,6 @@ class Booking(models.Model):
         # ✅ Now calculate total after saving (because M2M relations come later)
         total = self.calculate_discounted_price()
         Booking.objects.filter(pk=self.pk).update(total_price=total)
-
 
 class PasswordResetCode(models.Model):
     # user = models.ForeignKey(User, on_delete=models.CASCADE)
@@ -245,6 +249,138 @@ class ReferralActivity(models.Model):
     def __str__(self):
         return f"{self.referrer} invited {self.referred_phone}"
 
+        return f"{self.user.email} - {self.code}"    
+
+class Reward(models.Model):
+    REWARD_TYPES = [
+        ('free', 'Free Service'),
+        ('discount', 'Discount (%) or ₹'),
+        ('flat', 'Flat ₹ Off'),
+        ('cashback', 'Cashback (₹)'),
+    ]
+    title = models.CharField(max_length=100)
+    description = models.TextField(blank=True, null=True)
+    type = models.CharField(
+        max_length=20,
+        choices=REWARD_TYPES,
+        default='free',
+        help_text="Type of reward: Free, Discount, Flat, or Cashback"
+    )
+    discount_value = models.DecimalField(
+        max_digits=10,
+        decimal_places=2,
+        default=0,
+        help_text="For 'discount' use 0.10 for 10%. For flat/cashback use ₹ value."
+    )
+    required_points = models.PositiveIntegerField()
+    image = models.ImageField(upload_to='rewards/', blank=True, null=True)
+    service = models.ForeignKey('Service', on_delete=models.CASCADE, related_name='rewards', null=True, blank=True)
+    is_active = models.BooleanField(default=True)
+    created_at = models.DateTimeField(default=timezone.now)
+
+    def __str__(self):
+        return f"{self.title} ({self.required_points} pts)"
+    class Meta:
+        ordering = ['required_points']
+
+class LoyaltyPoint(models.Model):
+    customer = models.OneToOneField('Customer', on_delete=models.CASCADE, related_name='loyalty')
+    points = models.PositiveIntegerField(default=0)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    def add_points(self, amount):
+        self.points += int(amount)
+        self.save()
+
+    def deduct_points(self, amount):
+        if self.points >= int(amount):
+            self.points -= int(amount)
+            self.save()
+            return True
+        return False
+
+    def __str__(self):
+        return f"{self.customer.user.username} - {self.points} pts"
+
+
+class RedeemedReward(models.Model):
+    customer = models.ForeignKey('Customer', on_delete=models.CASCADE, related_name='redeemed_rewards')
+    reward = models.ForeignKey(Reward, on_delete=models.CASCADE)
+    redeemed_at = models.DateTimeField(auto_now_add=True)
+
+    def __str__(self):
+        return f"{self.customer.user.username} redeemed {self.reward.title}"
+
+
+class EarningRule(models.Model):
+    title = models.CharField(max_length=100)
+    description = models.TextField()
+    min_spend = models.DecimalField(max_digits=10, decimal_places=2,blank=True, null=True, help_text="Minimum spend to qualify for points (optional).")
+    points = models.PositiveIntegerField(default=0, help_text="Points for this action (may be used as a fixed bonus).")
+    amount_base = models.IntegerField(default=0)      
+    icon = models.CharField(max_length=50, blank=True, null=True, help_text="frontend icon name (optional)")
+    is_active = models.BooleanField(default=True)
+    display_order = models.PositiveIntegerField(default=0)
+
+    def __str__(self):
+        return f"{self.title} (+{self.points} pts)"        
+
+class Notification(models.Model):
+    customer = models.ForeignKey('Customer', on_delete=models.CASCADE, related_name='notifications')
+    title = models.CharField(max_length=200)
+    message = models.TextField()
+    is_read = models.BooleanField(default=False)
+    created_at = models.DateTimeField(default=timezone.now)
+
+    class Meta:
+        ordering = ['-created_at']
+        indexes = [
+            models.Index(fields=['customer', 'is_read']),
+            models.Index(fields=['created_at']),
+        ]
+
+    def __str__(self):
+        return f"{self.customer.user.username} - {self.title}"    
+
+class Coupon(models.Model):
+    COUPON_TYPE_CHOICES = [
+        ('percentage', 'Percentage'),
+        ('fixed', 'Fixed Amount'),
+        ('free', 'Free Service'),
+    ]
+
+    code = models.CharField(max_length=50, unique=True)
+    title = models.CharField(max_length=100)
+    description = models.TextField(blank=True, null=True)
+    discount_type = models.CharField(max_length=20, choices=COUPON_TYPE_CHOICES)
+    discount_value = models.DecimalField(max_digits=8, decimal_places=2, blank=True, null=True)
+    expiry_date = models.DateField()
+    applicable_service = models.ForeignKey('Service', on_delete=models.CASCADE, related_name='coupons', null=True, blank=True)
+    is_active = models.BooleanField(default=True)
+
+    def __str__(self):
+        return f"{self.code} ({self.discount_type})"
+
+    def is_valid(self):
+        
+        if not self.is_active:
+            return False
+        if not self.expiry_date:
+            return False  
+        return timezone.now().date() <= self.expiry_date
+
+class AppliedCoupon(models.Model):
+    customer = models.ForeignKey('Customer', on_delete=models.CASCADE, related_name='applied_coupons')
+    booking = models.ForeignKey('Booking', on_delete=models.CASCADE, related_name='applied_coupons')
+    coupon = models.ForeignKey('Coupon', on_delete=models.CASCADE)
+    applied_at = models.DateTimeField(auto_now_add=True)
+    discounted_price = models.DecimalField(max_digits=10, decimal_places=2, default=0.0)
+
+    class Meta:
+        unique_together = ('customer', 'booking', 'coupon')
+
+    def __str__(self):
+        return f"{self.customer.user.username} - {self.coupon.code} ({self.booking.id})"
 
 class Vehicle(models.Model):
     customer = models.ForeignKey('Customer', on_delete=models.CASCADE, related_name='vehicles')
@@ -265,3 +401,123 @@ class Vehicle(models.Model):
         ]
     def __str__(self):
         return f"{self.make} {self.model} ({self.year})"
+
+
+class Recall(models.Model):
+    URGENCY_CHOICES = [
+        ('urgent', 'Urgent'),
+        ('important', 'Important'),
+        ('moderate', 'Moderate'),
+    ]
+    service = models.ForeignKey(
+        'Service',
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='recalls',
+        help_text="Select the existing service this recall is related to."
+    )
+    title = models.CharField(max_length=150)
+    recall_number = models.CharField(max_length=50, unique=True)
+    description = models.TextField()
+    urgency = models.CharField(max_length=20, choices=URGENCY_CHOICES, default='moderate')
+    affected_make = models.CharField(max_length=100, blank=True, null=True)
+    affected_model = models.CharField(max_length=100, blank=True, null=True)
+    year_from = models.PositiveIntegerField(blank=True, null=True)
+    year_to = models.PositiveIntegerField(blank=True, null=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    
+    def __str__(self):
+        return f"{self.title} ({self.recall_number})"
+
+
+class VehicleRecall(models.Model):
+    STATUS_CHOICES = [
+        ('active', 'Active'),
+        ('completed', 'Completed'),
+        ('rescheduled', 'Rescheduled'),
+    ]
+
+    vehicle = models.ForeignKey(Vehicle, on_delete=models.CASCADE, related_name='vehicle_recalls')
+    recall = models.ForeignKey(Recall, on_delete=models.CASCADE, related_name='vehicle_recalls')
+    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='active')
+    last_service_date = models.DateTimeField(blank=True, null=True)
+    next_service_date = models.DateTimeField(blank=True, null=True)
+    service_count = models.PositiveIntegerField(default=0)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    def check_if_already_serviced(self):
+        """
+        ✅ Checks if this recall-related service has already been done by the user
+        through the Booking table.
+        """
+        completed_bookings = Booking.objects.filter(
+            customer=self.vehicle.customer,
+            services__title__icontains=self.recall.title,
+            status='completed',
+            is_recall_service=True
+        ).distinct()
+
+        if completed_bookings.exists():
+            last_booking = completed_bookings.last()
+            self.status = 'completed'
+            self.last_service_date = last_booking.appointment_date
+            self.service_count = completed_bookings.count()
+            self.save()
+            return True
+        return False
+
+    def mark_completed(self):
+        self.status = 'completed'
+        self.last_service_date = timezone.now()
+        self.service_count += 1
+        self.save()
+
+    def schedule_again(self, date=None):
+        self.status = 'rescheduled'
+        self.next_service_date = date or timezone.now()
+        self.save()
+
+    def __str__(self):
+        return f"{self.vehicle} - {self.recall.title} ({self.status})"
+
+
+class RecallServiceHistory(models.Model):
+    vehicle_recall = models.ForeignKey(VehicleRecall, on_delete=models.CASCADE, related_name='service_history')
+    customer = models.ForeignKey('Customer', on_delete=models.CASCADE, related_name='recall_services')
+    booking = models.ForeignKey('Booking', on_delete=models.SET_NULL, null=True, blank=True, related_name='recall_services')
+    service_date = models.DateTimeField(default=timezone.now)
+    remarks = models.TextField(blank=True, null=True)
+    is_repeat_service = models.BooleanField(default=False)
+
+    def __str__(self):
+        return f"{self.vehicle_recall.vehicle} - {self.vehicle_recall.recall.title} ({'Repeat' if self.is_repeat_service else 'Initial'})"
+
+
+class Review(models.Model):
+    customer = models.ForeignKey('Customer', on_delete=models.CASCADE, related_name='reviews')
+    booking = models.ForeignKey('Booking', on_delete=models.CASCADE, related_name='reviews', null=True, blank=True)
+    rating = models.PositiveIntegerField(default=5)
+    comment = models.TextField()
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    def __str__(self):
+        return f"{self.customer.user.username} - {self.rating}⭐"
+
+
+
+class ServiceFeedback(models.Model):
+    customer = models.ForeignKey('Customer', on_delete=models.CASCADE, related_name='service_feedbacks')
+    booking = models.ForeignKey('Booking', on_delete=models.CASCADE, related_name='feedback')
+    overall_rating = models.PositiveSmallIntegerField(default=0)
+    punctuality_rating = models.PositiveSmallIntegerField(default=0)
+    service_quality_rating = models.PositiveSmallIntegerField(default=0)
+    communication_rating = models.PositiveSmallIntegerField(default=0)
+    review = models.TextField(blank=True, null=True)
+    submitted_at = models.DateTimeField(auto_now_add=True)
+    
+    class Meta:
+        unique_together = ('customer', 'booking')  
+    
+    def __str__(self):
+        return f"{self.customer.user.username} - {self.booking.id} ({self.overall_rating} stars)"
