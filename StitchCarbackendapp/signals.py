@@ -25,38 +25,57 @@ def create_customer_profile(sender, instance, created, **kwargs):
         Customer.objects.get_or_create(user=instance)
 
 
+
 @receiver(post_save, sender=Booking)
 def handle_loyalty_on_booking(sender, instance, created, **kwargs):
+    """
+    Handles loyalty points:
+    - Deduct points when a reward is used (already discounted in perform_create)
+    - Add cashback points when service completed with cashback reward
+    - Trigger referral rewards when booking is marked as completed
+    - Do NOT modify total_price here (handled in perform_create)
+    """
     with transaction.atomic():
-        loyalty, _ = LoyaltyPoint.objects.select_for_update().get_or_create(customer=instance.customer)
+        loyalty, _ = LoyaltyPoint.objects.select_for_update().get_or_create(
+            customer=instance.customer
+        )
 
-        # ✅ Deduct points when reward used (creation)
+        # ✅ Deduct reward points on new booking
         if created and instance.reward:
-            required_points = instance.reward.required_points or 0
-            if loyalty.points >= required_points:
-                loyalty.deduct_points(required_points)
-            else:
-                raise ValueError("Insufficient points for reward redemption.")
+    # Skip deduction if already redeemed manually
+            from .models import RedeemedReward
+            already_redeemed = RedeemedReward.objects.filter(
+                customer=instance.customer, reward=instance.reward
+            ).exists()
 
-        # ✅ Award points for normal bookings
-       
+            if not already_redeemed:
+                required = instance.reward.required_points or 0
+                if loyalty.points >= required:
+                    loyalty.deduct_points(required)
+                else:
+                    raise ValueError("Insufficient points for reward redemption.")
 
-        # elif created and not instance.reward:
-        #     amount = float(instance.total_price or 0)
-
-        #     rule = instance.earning_rule or EarningRule.objects.filter(is_active=True).first()
-        #     if rule and amount >= rule.amount_base:
-        #         points_to_award = int((amount / rule.amount_base) * rule.points)
-        #         if points_to_award > 0:
-        #             loyalty.add_points(points_to_award)
-        #             print(f"✅ Added {points_to_award} points for {instance.customer.user.username}")        
-
-        # ✅ Cashback after service completion
-        elif instance.status == 'completed' and instance.reward and instance.reward.type == 'cashback':
+        # ✅ Cashback on completion
+        if (
+            instance.status == "completed"
+            and instance.reward
+            and instance.reward.type == "cashback"
+        ):
             cashback_value = float(instance.reward.discount_value or 0)
             cashback_points = int(cashback_value * 10)
             if cashback_points > 0:
                 loyalty.add_points(cashback_points)
+    
+    # ✅ Trigger referral rewards on completion (outside transaction to avoid rollback)
+    if instance.status == "completed":
+        try:
+            from .views import give_referral_reward
+            print(f"[Signal] Triggering referral reward for booking {instance.id}, user {instance.customer.user.username}")
+            give_referral_reward(instance.customer.user)
+        except Exception as e:
+            print(f"❌ [Signal] Referral reward trigger FAILED: {e}")
+            import traceback
+            traceback.print_exc()
 
 @receiver(post_save, sender=Review)
 def award_points_for_review(sender, instance, created, **kwargs):
@@ -73,6 +92,8 @@ def award_points_for_review(sender, instance, created, **kwargs):
         loyalty.add_points(50)
     except Exception as e:
         print(f"[Review Points Error] {e}")
+
+
 
 
 # # loyaltyapp/signals.py

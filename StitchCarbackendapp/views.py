@@ -474,36 +474,65 @@ class BookingViewSet(viewsets.ModelViewSet):
                     "detail": "You cannot book a new service until your current service for this vehicle is completed."
                 })
 
-        # ===== 3️⃣ SAVE BOOKING FIRST =====
+        # ===== 3️⃣ PRE-VALIDATE REWARD (if provided) BEFORE CREATING BOOKING =====
+        # Use serializer.validated_data so we don't create a booking and then raise.
+        services_from_payload = serializer.validated_data.get('services', [])
+        reward_from_payload = serializer.validated_data.get('reward')
+
+        if reward_from_payload:
+            if reward_from_payload.service and reward_from_payload.service not in services_from_payload:
+                raise serializers.ValidationError("This reward can only be used for its associated service.")
+        # ===== 4️⃣ SAVE BOOKING =====
         booking = serializer.save(customer=customer)
 
-        # ===== 4️⃣ CALCULATE TOTAL PRICE =====
+        # ===== 5️⃣ CALCULATE TOTAL PRICE =====
         service_total = float(sum(float(s.price) for s in booking.services.all()))
         booking.total_price = service_total
 
-        # ===== 5️⃣ APPLY REWARD IF ANY =====
-        reward_id = self.request.data.get("reward_id")
-        if reward_id:
-            reward = Reward.objects.filter(id=reward_id, is_active=True).first()
-            if not reward:
-                raise serializers.ValidationError("Invalid or inactive reward.")
+        # ===== 6️⃣ APPLY REWARD IF ANY =====
+        reward_id_from_request = self.request.data.get('reward_id')
+        
+        reward = reward_from_payload or (
+            Reward.objects.filter(
+                id=reward_id_from_request,
+                is_active=True
+            ).first()
+            if reward_id_from_request
+            else None
+        )
 
-            if reward.service and reward.service not in booking.services.all():
-                raise serializers.ValidationError("This reward can only be used for its associated service.")
-
+        if reward:
             discount_value = float(reward.discount_value or 0)
-            if reward.type == "discount":
-                discount_amount = service_total * discount_value if discount_value <= 1 else discount_value
+            reward_type = reward.type  # ✅ define variable explicitly
+
+            if reward_type == "discount":
+                # Handles both 0.10 (10%) and 10 (10%) formats
+                discount_amount = (
+                    service_total * (discount_value / 100)
+                    if discount_value > 1
+                    else service_total * discount_value
+                )
                 booking.total_price = max(service_total - discount_amount, 0.0)
-            elif reward.type == "flat":
+
+            elif reward_type == "flat":
                 booking.total_price = max(service_total - discount_value, 0.0)
-            elif reward.type == "free":
+
+            elif reward_type == "free":
                 booking.total_price = 0.0
 
+            elif reward_type == "cashback":
+                # Cashback handled later in signal
+                pass
+
+            # ✅ Assign and save the updated total
             booking.reward = reward
             booking.save(update_fields=["reward", "total_price"])
+            # reward applied and saved
+
         else:
+
             booking.save(update_fields=["total_price"])
+
 
         # ===== 6️⃣ EARNING RULE (LOYALTY POINTS) =====
         earning_rule_id = self.request.data.get("earningRuleId")
@@ -521,7 +550,9 @@ class BookingViewSet(viewsets.ModelViewSet):
                         loyalty, _ = LoyaltyPoint.objects.get_or_create(customer=booking.customer)
                         loyalty.add_points(points_to_award)
 
-            booking = serializer.save(customer=customer, earning_rule=earning_rule)
+           # ✅ Only attach the rule — don’t re-save serializer again
+                booking.earning_rule = earning_rule
+                booking.save(update_fields=["earning_rule", "total_price"])
 
         # ===== 7️⃣ VEHICLE RECALL AUTO-COMPLETE =====
         try:
@@ -560,19 +591,41 @@ class BookingViewSet(viewsets.ModelViewSet):
         booking.refresh_from_db()
         return booking
 
+    def create(self, request, *args, **kwargs):
+        serializer = self.get_serializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        booking = self.perform_create(serializer)
+        booking.refresh_from_db()
+        response_serializer = self.get_serializer(booking)
+        headers = self.get_success_headers(response_serializer.data)
+        return Response(response_serializer.data, status=status.HTTP_201_CREATED, headers=headers)
+    
     def update(self, request, *args, **kwargs):
         instance = self.get_object()
-        old_status = instance.status  # before update
+        old_status = instance.status
 
         response = super().update(request, *args, **kwargs)
+        booking = instance
+        booking.refresh_from_db()  # ← IMPORTANT: get latest status
 
-        new_status = response.data.get("status")
-
-        # reward only when booking marked completed
-        if old_status != "completed" and new_status == "completed":
-            give_referral_reward(instance.customer.user)
+        if old_status != "completed" and booking.status == "completed":
+            print(f"Booking {booking.id} marked completed → triggering referral reward")
+            give_referral_reward(booking.customer.user)
 
         return response
+    # def update(self, request, *args, **kwargs):
+    #     instance = self.get_object()
+    #     old_status = instance.status  # before update
+
+    #     response = super().update(request, *args, **kwargs)
+
+    #     new_status = response.data.get("status")
+
+    #     # reward only when booking marked completed
+    #     if old_status != "completed" and new_status == "completed":
+    #         give_referral_reward(instance.customer.user)
+
+    #     return response
     
 
     @action(detail=True, methods=['post'], permission_classes=[permissions.IsAuthenticated])
@@ -584,6 +637,26 @@ class BookingViewSet(viewsets.ModelViewSet):
         booking.save()
         return Response(self.get_serializer(booking).data)
     
+    @action(detail=True, methods=['post'], permission_classes=[permissions.IsAuthenticated])
+    def complete(self, request, pk=None):
+        """Mark a booking as completed. Frontend should call this when service is completed/paid.
+
+        Permissions: only staff or the booking owner may complete a booking.
+        Triggers the existing referral/reward logic when status changes to 'completed'.
+        """
+        booking = self.get_object()
+        if not (request.user.is_staff or booking.customer.user == request.user):
+            return Response({'detail': 'Not allowed'}, status=status.HTTP_403_FORBIDDEN)
+
+        if booking.status == 'completed':
+            return Response(self.get_serializer(booking).data)
+
+        old_status = booking.status
+        booking.status = 'completed'
+        booking.save()
+
+        # If update() path exists it will handle give_referral_reward; signals also handle it.
+        return Response(self.get_serializer(booking).data)
     @action(detail=False, methods=['get'], url_path='check-status/(?P<user_id>[^/.]+)')
     def check_user_booking_status(self, request, user_id=None):
         try:
@@ -762,6 +835,36 @@ class OfferViewSet(viewsets.ModelViewSet):
     def get_permissions(self):
         if self.action in ['list', 'retrieve']:
             permission_classes = [permissions.AllowAny]
+        else:
+            permission_classes = [permissions.IsAdminUser]
+        return [permission() for permission in permission_classes]
+
+    @extend_schema(
+        request=OfferSerializer(many=True),
+        responses={201: OfferSerializer(many=True)},
+        summary="Create multiple offers",
+        description="Create multiple offers for services at once"
+    )
+    def create(self, request, *args, **kwargs):
+        """
+        Override create to support both single and bulk creation.
+        """
+        many = isinstance(request.data, list)
+        serializer = self.get_serializer(data=request.data, many=many)
+        serializer.is_valid(raise_exception=True)
+        self.perform_create(serializer)
+        return Response(serializer.data, status=status.HTTP_201_CREATED)
+    
+    def list(self, request, *args, **kwargs):
+    # Disable pagination when ?no_pagination=true
+        if request.GET.get("no_pagination") == "true":
+            queryset = self.get_queryset()
+            serializer = self.get_serializer(queryset, many=True)
+            return Response(serializer.data)
+
+        # default paginated response
+        return super().list(request, *args, **kwargs)    
+
 
 class UserPointsView(generics.GenericAPIView):
     permission_classes = [permissions.IsAuthenticated]
@@ -843,32 +946,89 @@ class InviteFriendAPIView(APIView):
             status=status.HTTP_200_OK
         )
 
-
+    # utils.py or inside your referral app
 def give_referral_reward(referred_user):
-    referred_phone = referred_user.phone_number
+        from .models import ReferralActivity, ReferralProfile, Booking, LoyaltyPoint
 
-    # find referral activity based on phone
-    activity = ReferralActivity.objects.filter(
-        referred_phone=referred_phone,
-        reward_given=False,
-        status="registered"
-    ).first()
+        try:
+            # 1. Count how many COMPLETED bookings this user has
+            completed_count = Booking.objects.filter(
+                customer__user=referred_user,
+                status="completed"
+            ).count()
 
-    if not activity:
-        return  # nothing to reward
+            # Only give reward on the VERY FIRST completed booking
+            if completed_count != 1:
+                print(f"Reward skipped: User has {completed_count} completed bookings")
+                return
 
-    reward_amount = 100  # change anytime
+            # 2. Find the pending referral
+            # First check for registered + reward not given
+            activity = ReferralActivity.objects.filter(
+                referred_phone=referred_user.phone_number,
+                status="registered",
+                reward_given=False
+            ).first()
 
-    # update referrer’s reward profile
-    profile, created = ReferralProfile.objects.get_or_create(user=activity.referrer)
-    profile.rewards_earned += reward_amount
-    profile.save()
+            # Fallback: check for completed but reward_given=False (previous award failed)
+            if not activity:
+                activity = ReferralActivity.objects.filter(
+                    referred_phone=referred_user.phone_number,
+                    status="completed",
+                    reward_given=False
+                ).first()
 
-    # mark activity as completed
-    activity.reward_given = True
-    activity.status = "completed"
-    activity.save()
+            if not activity:
+                print("No pending referral to reward")
+                return
 
+            reward_amount = 100
+
+            # 3. GIVE REWARD TO REFERRER (ReferralProfile + LoyaltyPoints)
+            referrer = activity.referrer
+            referrer_profile, _ = ReferralProfile.objects.get_or_create(user=referrer)
+            referrer_profile.rewards_earned = referrer_profile.rewards_earned + reward_amount
+            referrer_profile.invited_count = referrer_profile.invited_count + 1
+            referrer_profile.save()
+
+            # Also add to referrer's LoyaltyPoints
+            try:
+                referrer_customer = referrer.customer_profile
+                referrer_loyalty, _ = LoyaltyPoint.objects.get_or_create(customer=referrer_customer)
+                referrer_loyalty.add_points(reward_amount)
+            except Exception as loyalty_err:
+                print(f"⚠️  Could not add loyalty points to referrer: {loyalty_err}")
+
+            # 4. GIVE REWARD TO REFERRED USER (ReferralProfile + LoyaltyPoints)
+            referred_profile, _ = ReferralProfile.objects.get_or_create(user=referred_user)
+            referred_profile.rewards_earned = referred_profile.rewards_earned + reward_amount
+            referred_profile.save()
+
+            # Also add to referred user's LoyaltyPoints
+            try:
+                referred_customer = referred_user.customer_profile
+                referred_loyalty, _ = LoyaltyPoint.objects.get_or_create(customer=referred_customer)
+                referred_loyalty.add_points(reward_amount)
+            except Exception as loyalty_err:
+                print(f"⚠️  Could not add loyalty points to referred user: {loyalty_err}")
+
+            # 5. Mark activity as completed
+            activity.status = "completed"
+            activity.reward_given = True
+            activity.save()
+
+            # Refresh to confirm
+            referrer_profile.refresh_from_db()
+            referred_profile.refresh_from_db()
+
+            print(f"✅ REFERRAL REWARD SUCCESS: +{reward_amount} to both!")
+            print(f"   Referrer ({referrer.phone_number}): {referrer_profile.rewards_earned} ReferralProfile points + {reward_amount} LoyaltyPoints")
+            print(f"   Referred ({referred_user.phone_number}): {referred_profile.rewards_earned} ReferralProfile points + {reward_amount} LoyaltyPoints")
+
+        except Exception as e:
+            print(f"❌ give_referral_reward ERROR: {str(e)}")
+            import traceback
+            traceback.print_exc()
 
 class RedeemRewardView(generics.GenericAPIView):
     permission_classes = [permissions.IsAuthenticated]
@@ -988,7 +1148,8 @@ class VehicleViewSet(viewsets.ModelViewSet):
         return Vehicle.objects.filter(customer__user=user)
 
     def perform_create(self, serializer):
-        # customer = Customer.objects.get(user=self.request.user)
+        # FIX: fetch the customer for this logged-in user
+        customer = Customer.objects.get(user=self.request.user)
         serializer.save(customer=customer)
 
     def destroy(self, request, *args, **kwargs):
@@ -996,7 +1157,6 @@ class VehicleViewSet(viewsets.ModelViewSet):
         if vehicle.customer.user != request.user:
             return Response({"detail": "Not allowed"}, status=403)
         return super().destroy(request, *args, **kwargs)
-
 
 from rest_framework import viewsets
 from rest_framework.permissions import AllowAny, IsAdminUser
@@ -1064,25 +1224,16 @@ class PromotionBannerViewSet(viewsets.ModelViewSet):
     permission_classes = [permissions.IsAuthenticated]  # Only logged-in users can access
 
     def get_queryset(self):
-        """
-        Return banners belonging to the logged-in user.
-        """
-        user = self.request.user
-        # Ensure the user has a customer_profile
-        if hasattr(user, 'customer_profile'):
-            return PromotionBanner.objects.filter(customer=user.customer_profile)
-        return PromotionBanner.objects.none()
+        # Return all active banners
+        now = timezone.now()
+        return PromotionBanner.objects.filter(
+            is_active=True,
+            valid_from__lte=now,
+            valid_to__gte=now
+        )
 
     def perform_create(self, serializer):
-        """
-        Automatically assign the logged-in user's customer_profile
-        when creating a new banner.
-        """
-        user = self.request.user
-        if hasattr(user, 'customer_profile'):
-            serializer.save(customer=user.customer_profile)
-        else:
-            raise PermissionError("User does not have an associated customer profile.")
+        serializer.save()
 
 
 class RecallViewSet(viewsets.ModelViewSet):
@@ -1323,3 +1474,23 @@ class ServiceFeedbackViewSet(viewsets.ModelViewSet):
     #         "service_count": recall_instance.service_count,
     #         "last_service_date": recall_instance.last_service_date
     #     }, status=status.HTTP_200_OK)
+
+# ──────────────────────────────────────────────────────────────
+# DEBUG: Check referral data for current user (temporary)
+# Remove this later when everything works
+# ──────────────────────────────────────────────────────────────
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def debug_referral(request):
+    profile, _ = ReferralProfile.objects.get_or_create(user=request.user)
+    activities = ReferralActivity.objects.filter(referrer=request.user).values(
+        'id', 'referred_phone', 'status', 'reward_given', 'created_at'
+    )
+    return Response({
+        "debug_user": request.user.phone_number,
+        "referral_code": profile.referral_code,
+        "invited_count": profile.invited_count,
+        "rewards_earned": profile.rewards_earned,
+        "referral_activities": list(activities),
+        "total_referral_activities": ReferralActivity.objects.filter(referrer=request.user).count(),
+    })

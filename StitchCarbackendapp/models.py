@@ -4,6 +4,7 @@ from django.utils import timezone
 from django.conf import settings
 import uuid
 from django.contrib.auth.models import User
+from decimal import Decimal
 
 
 # Create your models here.
@@ -75,7 +76,12 @@ class Service(models.Model):
         return self.title
 
 class Offer(models.Model):
-    # service=models.ForeignKey('Service',on_delete=models.CASCADE,related_name='offers')
+    OFFER_TYPE_CHOICES = [
+        ('fixed', 'Fixed Services'),
+        ('flexible', 'Flexible Services')  # customer can choose any service
+    ]
+
+    offer_type = models.CharField(max_length=20, choices=OFFER_TYPE_CHOICES, default='flexible')
     services = models.ManyToManyField('Service', related_name='offers')
     title= models.CharField(max_length=100)
     description=models.TextField(blank=True,null=True)
@@ -86,7 +92,8 @@ class Offer(models.Model):
     image = models.ImageField(upload_to='offers/', blank=True, null=True)
      
     def __str__(self):
-        return f"{self.title} - {self.service.title}"
+        service_titles = ", ".join([s.title for s in self.services.all()])
+        return f"{self.title} - {service_titles}"
 
     def is_valid(self):
         now = timezone.now()
@@ -131,23 +138,60 @@ class Booking(models.Model):
     def calculate_discounted_price(self):
         """
         Calculates the total price of all selected services,
-        applying any offer discount if present.
+        applying any offer discount and reward discount if present.
         """
-        total_service_price = sum(service.price for service in self.services.all())
+        # Work with Decimal for safe arithmetic
+        total_service_price = sum((service.price for service in self.services.all()), Decimal('0'))
 
-        # ✅ Fix: use correct offer discount field
+        # Apply offer discount first if present
         if self.offer and hasattr(self.offer, 'discount_percentage'):
-            discount = (self.offer.discount_percentage / 100) * total_service_price
-            return total_service_price - discount
+            discount = (Decimal(str(self.offer.discount_percentage)) / Decimal('100')) * total_service_price
+            total_service_price = total_service_price - discount
+
+        # Apply reward discount if present
+        if self.reward:
+            discount_value = Decimal(str(self.reward.discount_value or 0))
+            if self.reward.type == "discount":
+                if discount_value > Decimal('1'):
+                    # treat as percentage like 10 (meaning 10%)
+                    discount_amount = total_service_price * (discount_value / Decimal('100'))
+                else:
+                    # treat as fractional like 0.10
+                    discount_amount = total_service_price * discount_value
+                total_service_price = max(total_service_price - discount_amount, Decimal('0'))
+            elif self.reward.type == "flat":
+                total_service_price = max(total_service_price - discount_value, Decimal('0'))
+            elif self.reward.type == "free":
+                total_service_price = Decimal('0')
 
         return total_service_price
 
     def save(self, *args, **kwargs):
-        """Automatically calculate total price"""
-        # First save to get an ID (needed before accessing many-to-many)
+        """Automatically calculate total price.
+
+        Behavior:
+        - If caller explicitly updates `total_price` via `update_fields`, do not overwrite it.
+        - Only recalculate when services exist (M2M present).
+        """
+        update_fields = kwargs.get('update_fields', None)
+
+        # First perform the regular save
         super().save(*args, **kwargs)
 
-        # ✅ Now calculate total after saving (because M2M relations come later)
+        # If caller asked to update total_price explicitly, respect it and do not overwrite
+        if update_fields and 'total_price' in update_fields:
+            return
+
+        # If there are no services yet, skip recalculation (services are M2M and set after create)
+        try:
+            has_services = self.services.exists()
+        except Exception:
+            has_services = False
+
+        if not has_services:
+            return
+
+        # Recalculate and persist
         total = self.calculate_discounted_price()
         Booking.objects.filter(pk=self.pk).update(total_price=total)
 

@@ -9,7 +9,7 @@ from rest_framework_simplejwt.views import (
 )
 from .views import OfferViewSet, VehicleViewSet
 from .views import ReferralDashboardAPIView, InviteFriendAPIView, FeaturedPromotionViewSet, PromotionBannerViewSet
-
+from .import views
 
 
 router = DefaultRouter()
@@ -44,6 +44,7 @@ urlpatterns = [
     path('send-verification-code/', SendVerificationCodeAPIView.as_view(), name='send_verification_code'),
     path('verify-code/', VerifyCodeAPIView.as_view(), name='verify_code'),
     path("referral/dashboard/", ReferralDashboardAPIView.as_view()),
+    path('debug/referral/', views.debug_referral, name='debug_referral'),
     path("referral/invite/", InviteFriendAPIView.as_view()),
     path('api/points/', UserPointsView.as_view(), name='user-points'),
     path('api/rewards/redeem/', RedeemRewardView.as_view(), name='redeem-reward'),

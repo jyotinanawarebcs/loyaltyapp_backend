@@ -45,7 +45,7 @@ class BookingSerializer(serializers.ModelSerializer):
 
     reward_id = serializers.PrimaryKeyRelatedField(
         source='reward',
-        queryset=Reward.objects.all(),
+        queryset=Reward.objects.filter(is_active=True),
         required=False,
         allow_null=True
     )
@@ -55,9 +55,9 @@ class BookingSerializer(serializers.ModelSerializer):
             'id', 'customer', 'customer_username', 'customer_contact','services', 'service_title', 'offer', 'offer_code',
             'booking_date', 'appointment_date', 'appointment_time',
             'vehicle_make', 'vehicle_model', 'vehicle_year',
-            'total_price', "vehicle_number",'vehicle', 'status', 'offer_code','notes'
+            'total_price', "vehicle_number",'vehicle', 'status', 'offer_code','notes','reward_id'
         ]
-        read_only_fields = ['id', 'booking_date', 'total_price', 'customer_username', 'service_title']
+        read_only_fields = ['id', 'booking_date', 'customer_username', 'service_title']
 
 
     def __init__(self, *args, **kwargs):
@@ -117,6 +117,11 @@ class BookingSerializer(serializers.ModelSerializer):
         return booking
     
     def get_total_price(self, obj):
+        # ✅ Return the actual total_price from DB (which may have reward discount applied)
+        # Always return the DB value (including 0 for free rewards)
+        # Only calculate from services if not set
+        if obj.total_price is not None:
+            return float(obj.total_price)
         return sum([s.price for s in obj.services.all()])
 
 
@@ -413,11 +418,7 @@ class VerifyCodeSerializer(serializers.Serializer):
 
 
 class OfferSerializer(serializers.ModelSerializer):
-    services = serializers.PrimaryKeyRelatedField(
-        many=True,
-        queryset=Service.objects.all()
-    )
-    service_names = serializers.SerializerMethodField()
+    services_with_details = serializers.SerializerMethodField()
     image_url = serializers.SerializerMethodField()
 
     class Meta:
@@ -425,7 +426,7 @@ class OfferSerializer(serializers.ModelSerializer):
         fields = [
             'id',
             'services',
-            'service_names',
+            'services_with_details',
             'title',
             'description',
             'discount_percentage',
@@ -435,9 +436,15 @@ class OfferSerializer(serializers.ModelSerializer):
             'image_url',
         ]
 
-    def get_service_names(self, obj):
-        return [s.title for s in obj.services.all()]
-
+    def get_services_with_details(self, obj):
+        return [
+            {
+                "id": s.id,
+                "title": s.title,
+                "price": s.price,
+            }
+            for s in obj.services.all()
+        ]
     def get_image_url(self, obj):
         request = self.context.get('request')
         if obj.image and hasattr(obj.image, 'url'):
@@ -684,10 +691,10 @@ class VehicleSerializer(serializers.ModelSerializer):
         return None
     
 
-class OfferSerializer(serializers.ModelSerializer):
-    class Meta:
-        model = Offer
-        fields = '__all__'
+# class OfferSerializer(serializers.ModelSerializer):
+#     class Meta:
+#         model = Offer
+#         fields = '__all__'
 
 
 class FeaturedPromotionSerializer(serializers.ModelSerializer):
