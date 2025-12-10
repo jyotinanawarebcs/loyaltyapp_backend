@@ -1,7 +1,7 @@
 from django.contrib import admin
 from .models import (
     Service, Booking, Coupon, Reward, LoyaltyPoint,
-    RedeemedReward, EarningRule,Offer,Vehicle,Customer
+    RedeemedReward, EarningRule,Offer,Vehicle,Customer,ServiceFeedback
 )
 from django.contrib.auth import get_user_model
 from django.utils.html import format_html
@@ -390,3 +390,12 @@ class ReferralActivityAdmin(admin.ModelAdmin):
     def mark_as_completed(self, request, queryset):
         updated = queryset.update(status="completed", reward_given=True)
         self.message_user(request, f"{updated} referral(s) marked as completed and rewarded.")
+
+@admin.register(ServiceFeedback)
+class ServiceFeedbackAdmin(admin.ModelAdmin):
+    list_display = ('customer', 'get_services', 'overall_rating', 'review', 'submitted_at')
+
+    def get_services(self, obj):
+        return ", ".join([s.title for s in obj.booking.services.all()])
+    get_services.short_description = 'Services'
+    

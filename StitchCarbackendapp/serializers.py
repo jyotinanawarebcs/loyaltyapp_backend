@@ -31,6 +31,7 @@ class ServiceSerializer(serializers.ModelSerializer):
     class Meta:
         model = Service
         fields = '__all__' 
+
 class BookingSerializer(serializers.ModelSerializer):
    
     customer = serializers.PrimaryKeyRelatedField(queryset=Customer.objects.all(), required=False)
@@ -74,7 +75,7 @@ class BookingSerializer(serializers.ModelSerializer):
         try:
             return obj.customer.user.username
         except Exception:
-            return None
+            return None 
 
     def get_service_title(self, obj):
         return ", ".join([s.title for s in obj.services.all()])
@@ -230,13 +231,16 @@ class CustomUserSerializer(serializers.ModelSerializer):
         read_only_fields=['id','is_staff']
     
     def get_customer_profile(self, obj):
-        """Safely return customer data if exists"""
+        """Return or auto-create customer profile safely."""
         try:
-            from .serializers_customer import CustomerSerializer  # ✅ local import to avoid circular import
-            if hasattr(obj, 'customer_profile'):
-                return CustomerSerializer(obj.customer_profile).data
-            return None
-        except Exception:
+            from .serializers import CustomerSerializer
+
+            # ✅ Create a Customer record if missing
+            customer, _ = Customer.objects.get_or_create(user=obj)
+            return CustomerSerializer(customer).data
+
+        except Exception as e:
+            print(f"⚠️ Error in get_customer_profile for user {obj.id}: {e}")
             return None
 
     def create(self, validated_data):
@@ -253,6 +257,10 @@ class CustomUserSerializer(serializers.ModelSerializer):
         if password:
             user.set_password(password)
             user.save()
+
+            # ✅ Ensure a Customer profile is always created
+        from .models import Customer
+        Customer.objects.get_or_create(user=user)
         if customer_data:
             Customer.objects.create(user=user, **customer_data)
         return user
@@ -265,7 +273,10 @@ class CustomUserSerializer(serializers.ModelSerializer):
         if password:
             instance.set_password(password)
         instance.save()
-        
+        # ✅ Always ensure a Customer exists (create if missing)
+        from .models import Customer
+        Customer.objects.get_or_create(user=instance)
+
         if isinstance(customer_data, dict):
             Customer.objects.update_or_create(user=instance, defaults=customer_data)
         return instance
@@ -296,7 +307,7 @@ class CustomUserSerializer(serializers.ModelSerializer):
 class CustomerSerializer(serializers.ModelSerializer):
     class Meta:
         model = Customer
-        fields = ['address', 'city', 'country', 'joined_at']
+        fields = ['address', 'city', 'country', 'joined_at','notifications_enabled']
         read_only_fields = ['joined_at']
 
 class RegisterSerializer(serializers.ModelSerializer):
@@ -779,6 +790,7 @@ class ReviewSerializer(serializers.ModelSerializer):
 class ServiceFeedbackSerializer(serializers.ModelSerializer):
     customer_name = serializers.CharField(source='customer.user.username', read_only=True)
     service_titles = serializers.SerializerMethodField()
+    appointment_date = serializers.DateField(source='booking.appointment_date', read_only=True)
 
     class Meta:
         model = ServiceFeedback
@@ -794,16 +806,41 @@ class ServiceFeedbackSerializer(serializers.ModelSerializer):
             'submitted_at',
             'customer_name',
             'service_titles',
+            'appointment_date'
         ]
-        read_only_fields = ['submitted_at', 'customer_name', 'service_titles']
+        read_only_fields = [
+            'submitted_at',
+            'customer_name',
+            'service_titles',
+            'appointment_date',
+            'customer',
+        ]
 
     def get_service_titles(self, obj):
         return [service.title for service in obj.booking.services.all()]
 
     def validate(self, data):
-        # Restrict 1 feedback per booking per customer
-        customer = data.get('customer')
+        request = self.context.get('request')
+        user = request.user if request else None
+        try:
+            # ✅ convert user to Customer object
+            customer = Customer.objects.get(user=user)
+        except Customer.DoesNotExist:
+            raise serializers.ValidationError("Customer profile not found.")
+
         booking = data.get('booking')
         if ServiceFeedback.objects.filter(customer=customer, booking=booking).exists():
             raise serializers.ValidationError("Feedback already submitted for this booking.")
         return data
+
+    def create(self, validated_data):
+        request = self.context.get('request')
+        user = request.user if request else None
+        try:
+            # ✅ convert user to Customer object again here
+            customer = Customer.objects.get(user=user)
+        except Customer.DoesNotExist:
+            raise serializers.ValidationError("Customer profile not found.")
+
+        validated_data['customer'] = customer
+        return super().create(validated_data)

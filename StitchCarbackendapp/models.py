@@ -37,6 +37,7 @@ class Customer(models.Model):
     city = models.CharField(max_length=100, blank=True, null=True)
     country = models.CharField(max_length=100, blank=True, null=True)
     joined_at = models.DateTimeField(default=timezone.now)
+    notifications_enabled = models.BooleanField(default=True) 
 
     def __str__(self):
         return f"{self.user.username}'s Profile"

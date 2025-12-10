@@ -52,6 +52,7 @@ from .models import (
     ReferralActivity,
     FeaturedPromotion,
     PromotionBanner,
+    ServiceFeedback
 )
 
 from .serializers import (
@@ -91,6 +92,10 @@ def notifications_list(request):
     customer = getattr(request.user, 'customer_profile', None)
     if not customer:
         return Response([], status=200)
+
+    if not customer.notifications_enabled:
+        return Response([], status=200)  
+          
     qs = Notification.objects.filter(customer=customer).order_by('-created_at')
     serializer = NotificationSerializer(qs, many=True)
     return Response(serializer.data)
@@ -459,20 +464,25 @@ class BookingViewSet(viewsets.ModelViewSet):
         vehicle_model = self.request.data.get("vehicle_model")
         vehicle_year = self.request.data.get("vehicle_year")
 
-        # Prevent duplicate active bookings for same car
-        if vehicle_make and vehicle_model and vehicle_year:
-            active_booking = Booking.objects.filter(
-                customer=customer,
-                vehicle_make=vehicle_make,
-                vehicle_model=vehicle_model,
-                vehicle_year=vehicle_year,
-                status__in=['in_progress', 'completed', 'ready_for_pickup']
-            ).first()
+        # Detect if this is a recall service booking
+        is_recall_service = str(self.request.data.get("is_recall_service")).lower() in ["true", "1"]
+        notes_text = str(self.request.data.get("notes") or "").lower()
 
-            if active_booking:
-                raise serializers.ValidationError({
-                    "detail": "You cannot book a new service until your current service for this vehicle is completed."
-                })
+        # ⚙ Only block duplicate bookings for normal services
+        if not (is_recall_service or "recall" in notes_text):
+            if vehicle_make and vehicle_model and vehicle_year:
+                active_booking = Booking.objects.filter(
+                    customer=customer,
+                    vehicle_make=vehicle_make,
+                    vehicle_model=vehicle_model,
+                    vehicle_year=vehicle_year,
+                    status__in=['pending', 'in_progress', 'ready_for_pickup', 'rescheduled']
+                ).first()
+
+                if active_booking:
+                    raise serializers.ValidationError({
+                        "detail": "You cannot book a new service until your current service for this vehicle is completed."
+                    })
 
         # ===== 3️⃣ PRE-VALIDATE REWARD (if provided) BEFORE CREATING BOOKING =====
         # Use serializer.validated_data so we don't create a booking and then raise.
@@ -676,8 +686,31 @@ class BookingViewSet(viewsets.ModelViewSet):
         except Exception as e:
             return Response(
                 {'error': str(e)},
-                status=status.HTTP_400_BAD_REQUEST
-            )
+                status=status.HTTP_400_BAD_REQUEST)
+    
+    @action(detail=False, methods=['get'], permission_classes=[permissions.IsAuthenticated])
+    def completed_for_feedback(self, request):
+        """
+        Returns only completed bookings that do NOT have feedback yet.
+        Used by 'Leave Review' flow in Loyalty Page.
+        """
+        user = request.user
+        try:
+            customer = Customer.objects.get(user=user)
+        except Customer.DoesNotExist:
+            return Response([], status=200)
+
+        completed = Booking.objects.filter(
+            customer=customer,
+            status='ready_for_pickup'
+        ).exclude(
+            id__in=ServiceFeedback.objects.filter(customer=customer).values_list('booking_id', flat=True)
+        ).prefetch_related('services')
+
+        serializer = self.get_serializer(completed, many=True)
+        return Response(serializer.data)            
+            
+    
     # ✅ Add this method only
     def list(self, request, *args, **kwargs):
         user_agent = request.META.get('HTTP_USER_AGENT', '').lower()
@@ -988,7 +1021,7 @@ def give_referral_reward(referred_user):
             referrer = activity.referrer
             referrer_profile, _ = ReferralProfile.objects.get_or_create(user=referrer)
             referrer_profile.rewards_earned = referrer_profile.rewards_earned + reward_amount
-            referrer_profile.invited_count = referrer_profile.invited_count + 1
+            # referrer_profile.invited_count = referrer_profile.invited_count + 1
             referrer_profile.save()
 
             # Also add to referrer's LoyaltyPoints
@@ -1115,7 +1148,7 @@ def urgent_recalls_home(request):
 
     recalls = VehicleRecall.objects.filter(
         vehicle__customer=customer,
-        recall__urgency__in=['urgent', 'important']
+        recall__urgency__in=['urgent', 'important','moderate']
     ).select_related('vehicle', 'recall').order_by(
         '-recall__urgency', 'status', '-recall__created_at'  # active first, then completed
     )
@@ -1409,27 +1442,37 @@ class ServiceFeedbackViewSet(viewsets.ModelViewSet):
 
         booking = serializer.validated_data['booking']
 
-        # ✅ Ensure the booking belongs to this customer
+        # ✅ Ensure feedback belongs to this user only
         if booking.customer != customer:
             raise serializers.ValidationError("You cannot submit feedback for another user's booking.")
 
-        # ✅ Allow feedback only if booking is completed
-        if booking.status != 'completed':
-            raise serializers.ValidationError("You can only submit feedback after your booking is completed.")
+        # ✅ Allow only if booking completed
+        if booking.status != 'ready_for_pickup':
+            raise serializers.ValidationError("You can only give feedback for completed bookings.")
 
-        # ✅ Prevent duplicate feedback
+        # ✅ Prevent duplicates (extra safety)
         if ServiceFeedback.objects.filter(customer=customer, booking=booking).exists():
             raise serializers.ValidationError("Feedback already submitted for this booking.")
 
-        serializer.save(customer=customer)
+        # Save feedback
+        feedback = serializer.save(customer=customer)
 
+        # ✅ Award Loyalty Points for review
+        try:
+            loyalty, _ = LoyaltyPoint.objects.get_or_create(customer=customer)
+            loyalty.add_points(50)
+            print(f"✅ Awarded 50 loyalty points for feedback on booking {booking.id}")
+        except Exception as e:
+            print(f"❌ Loyalty point award failed: {e}")
+
+        return feedback
 
     def get_queryset(self):
-        # Limit to user's feedback only
         user = self.request.user
         if user.is_staff:
-            return ServiceFeedback.objects.all().order_by('-submitted_at')
-        return ServiceFeedback.objects.filter(customer__user=user).order_by('-submitted_at')            
+            return ServiceFeedback.objects.all().select_related('customer__user', 'booking').order_by('-submitted_at')
+        return ServiceFeedback.objects.filter(customer__user=user).order_by('-submitted_at')
+         
     # @action(detail=True, methods=['post'])
     # def mark_completed(self, request, pk=None):
     #     """
