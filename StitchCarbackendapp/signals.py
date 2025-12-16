@@ -2,7 +2,7 @@
 from django.db.models.signals import post_save
 from django.dispatch import receiver
 from django.db import transaction
-from .models import Booking, LoyaltyPoint, Reward, Customer,EarningRule,Review
+from .models import Booking, LoyaltyPoint, Reward, Customer,EarningRule,Review,CustomerMembership
 from django.contrib.auth import get_user_model
 
 def calculate_points(amount):
@@ -93,6 +93,10 @@ def award_points_for_review(sender, instance, created, **kwargs):
     except Exception as e:
         print(f"[Review Points Error] {e}")
 
+@receiver(post_save, sender=Customer)
+def create_membership_for_new_customer(sender, instance, created, **kwargs):
+    if created:
+        CustomerMembership.objects.get_or_create(customer=instance, defaults={'active': False})
 
 
 

@@ -8,7 +8,7 @@ from rest_framework_simplejwt.views import (
     TokenRefreshView,     
 )
 from .views import OfferViewSet, VehicleViewSet
-from .views import ReferralDashboardAPIView, InviteFriendAPIView, FeaturedPromotionViewSet, PromotionBannerViewSet
+from .views import ReferralDashboardAPIView, InviteFriendAPIView, FeaturedPromotionViewSet, PromotionBannerViewSet,MembershipPlanViewSet, CustomerMembershipViewSet
 from .import views
 
 
@@ -27,6 +27,8 @@ router.register(r'recalls', RecallViewSet, basename='recall')
 router.register(r'vehicle-recalls', VehicleRecallViewSet, basename='vehicle-recall')
 router.register(r'reviews', ReviewViewSet, basename='review')
 router.register(r'feedbacks', ServiceFeedbackViewSet, basename='feedback')
+router.register(r'membership-plans', MembershipPlanViewSet, basename='membership-plan')
+router.register(r'memberships', CustomerMembershipViewSet, basename='customer-membership')
 urlpatterns = [
     path('api/', include(router.urls)),
      path('bookings/check-status/<int:user_id>/',

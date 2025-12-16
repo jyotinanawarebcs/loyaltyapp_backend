@@ -26,7 +26,7 @@ from rest_framework.parsers import MultiPartParser, FormParser, JSONParser
 from rest_framework_simplejwt.tokens import RefreshToken, TokenError
 from rest_framework_simplejwt.authentication import JWTAuthentication
 
-from .permissions import IsCustomerOrReadOnly
+from .permissions import IsCustomerOrReadOnly, IsAdminOrReadOnly
 
 from .models import (
     CustomUser,
@@ -52,7 +52,9 @@ from .models import (
     ReferralActivity,
     FeaturedPromotion,
     PromotionBanner,
-    ServiceFeedback
+    ServiceFeedback,
+    MembershipPlan,
+    CustomerMembership,
 )
 
 from .serializers import (
@@ -82,6 +84,8 @@ from .serializers import (
     InviteFriendSerializer,
     FeaturedPromotionSerializer,
     PromotionBannerSerializer,
+    MembershipPlanSerializer,
+    CustomerMembershipSerializer,
 )
 
 
@@ -228,12 +232,19 @@ class CustomUserViewSet(viewsets.ModelViewSet):
 
     @action(detail=False, methods=['get', 'put'], url_path='me')
     def me(self, request):
-        """Fetch or update current logged-in user"""
-        serializer = self.get_serializer(request.user, data=request.data, partial=True)
-        if request.method == 'PUT':
+        """Fetch or update the currently logged-in user"""
+        user = request.user
+
+        if request.method == 'GET':
+            serializer = self.get_serializer(user)
+            return Response(serializer.data, status=200)
+
+        elif request.method == 'PUT':
+            serializer = self.get_serializer(user, data=request.data, partial=True)
             serializer.is_valid(raise_exception=True)
             serializer.save()
-        return Response(serializer.data)
+            return Response(serializer.data, status=200)
+
 
     def perform_create(self, serializer):
         user = serializer.save()
@@ -247,25 +258,25 @@ class CustomUserViewSet(viewsets.ModelViewSet):
             return [IsAdminUser()]  
         return [IsAuthenticated()]         
     
-class IsCustomerOrReadOnly(permissions.BasePermission):
-    """
-    Allow safe methods for anyone (or restrict to staff); unsafe methods allowed
-    only if user is the booking.customer or staff.
-    """
-    def has_permission(self, request, view):
-        if request.method in permissions.SAFE_METHODS:
-            return True
-        return request.user and request.user.is_authenticated
+# class IsCustomerOrReadOnly(permissions.BasePermission):
+#     """
+#     Allow safe methods for anyone (or restrict to staff); unsafe methods allowed
+#     only if user is the booking.customer or staff.
+#     """
+#     def has_permission(self, request, view):
+#         if request.method in permissions.SAFE_METHODS:
+#             return True
+#         return request.user and request.user.is_authenticated
 
-    def has_object_permission(self, request, view, obj):
-        if request.method in permissions.SAFE_METHODS:
-            return True
-        if request.user.is_staff:
-            return True
-        try:
-            return obj.customer.user == request.user
-        except Exception:
-            return False
+#     def has_object_permission(self, request, view, obj):
+#         if request.method in permissions.SAFE_METHODS:
+#             return True
+#         if request.user.is_staff:
+#             return True
+#         try:
+#             return obj.customer.user == request.user
+#         except Exception:
+#             return False
         
 class RegisterAPIView(GenericAPIView):
     serializer_class = RegisterSerializer
@@ -317,28 +328,6 @@ class RegisterAPIView(GenericAPIView):
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
       
-# class RegisterAPIView(GenericAPIView):
-#     serializer_class = RegisterSerializer
-#     permission_classes = [permissions.AllowAny]
-
-#     def post(self, request):
-#         serializer = self.get_serializer(data=request.data)
-#         if serializer.is_valid():
-#             user = serializer.save()  
-
-#             return Response({
-#                 "message": "User registered successfully",
-#                 "user": {
-#                     "id": user.id,
-#                     "username": user.username,
-#                     "email": user.email,
-#                     "phone_number": user.phone_number,
-#                 }
-#             }, status=status.HTTP_201_CREATED)
-
-#         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
-
-
 class LoginAPIView(GenericAPIView):
     serializer_class = LoginSerializer
     permission_classes = [permissions.AllowAny]
@@ -498,7 +487,46 @@ class BookingViewSet(viewsets.ModelViewSet):
         # ===== 5️⃣ CALCULATE TOTAL PRICE =====
         service_total = float(sum(float(s.price) for s in booking.services.all()))
         booking.total_price = service_total
+        
 
+        try:
+            membership = booking.customer.membership
+            if membership and membership.active:
+                benefits = membership.get_benefits()
+                discount_percent = benefits.get("booking_discount", 0)
+                if discount_percent > 0:
+                    discount_amount = (discount_percent / 100) * float(booking.total_price)
+                    booking.total_price = max(float(booking.total_price) - discount_amount, 0)
+                    booking.save(update_fields=["total_price"])
+        except Exception:
+            pass
+            
+        if booking.offer:
+            offer = booking.offer
+
+            # 🚨 Check if offer is active and valid
+            if not offer.is_valid():
+                raise serializers.ValidationError({"offer": "This offer is not currently active or has expired."})
+
+            # 🚨 Check eligibility for membership-only offers
+            if not offer.is_eligible_for(customer):
+                raise serializers.ValidationError({"offer": "You are not eligible for this membership-exclusive offer."})
+
+            # ✅ Apply discount only if eligible
+            discount_type = getattr(offer, "discount_type", "percentage")
+            discount_percentage = float(getattr(offer, "discount_percentage", 0))
+
+            if discount_type == "percentage":
+                discount = (discount_percentage / 100) * booking.total_price
+                booking.total_price = max(booking.total_price - discount, 0.0)
+
+            elif discount_type == "flat":
+                booking.total_price = max(booking.total_price - discount_percentage, 0.0)
+
+            elif discount_type == "free":
+                booking.total_price = 0.0
+
+        
         # ===== 6️⃣ APPLY REWARD IF ANY =====
         reward_id_from_request = self.request.data.get('reward_id')
         
@@ -562,7 +590,8 @@ class BookingViewSet(viewsets.ModelViewSet):
 
            # ✅ Only attach the rule — don’t re-save serializer again
                 booking.earning_rule = earning_rule
-                booking.save(update_fields=["earning_rule", "total_price"])
+                booking.save(update_fields=["earning_rule", "total_price","offer"])
+                print("OFFER APPLIED:", booking.offer, booking.offer.discount_type, booking.offer.discount_value)
 
         # ===== 7️⃣ VEHICLE RECALL AUTO-COMPLETE =====
         try:
@@ -744,6 +773,29 @@ class BookingViewSet(viewsets.ModelViewSet):
         serializer = self.get_serializer(queryset, many=True)
         return Response(serializer.data)
 
+ 
+    @action(detail=True, methods=['get'], permission_classes=[permissions.IsAuthenticated])
+    def recalculate_price(self, request, pk=None):
+        booking = self.get_object()
+        booking.refresh_from_db()
+
+        # Recalculate any applicable membership or offers if needed
+        try:
+            membership = booking.customer.membership
+            if membership and membership.active:
+                benefits = membership.get_benefits()
+                discount_percent = benefits.get("booking_discount", 0)
+                if discount_percent > 0:
+                    base_price = sum(float(s.price) for s in booking.services.all())
+                    membership_discount = (discount_percent / 100) * base_price
+                    booking.total_price = max(base_price - membership_discount, 0)
+                    booking.save(update_fields=["total_price"])
+        except Exception:
+            pass
+
+        serializer = self.get_serializer(booking)
+        return Response(serializer.data)
+
 class AdminRegisterAPIView(GenericAPIView):
     serializer_class = RegisterSerializer
     permission_classes = [permissions.AllowAny]
@@ -861,9 +913,15 @@ class OfferViewSet(viewsets.ModelViewSet):
     authentication_classes = [JWTAuthentication]
 
     def get_queryset(self):
+        now = timezone.now()
         if self.request.user.is_staff:
             return Offer.objects.all().order_by('-valid_from')
-        return Offer.objects.filter(is_active=True, valid_to__gte=timezone.now()).order_by('-valid_from')
+        
+        return Offer.objects.filter(
+            is_active=True,
+            valid_from__lte=now,
+            valid_to__gte=now
+        ).order_by('-valid_from')
 
     def get_permissions(self):
         if self.action in ['list', 'retrieve']:
@@ -1091,6 +1149,11 @@ class CouponListView(generics.ListAPIView):
     queryset = Coupon.objects.filter(is_active=True)
     serializer_class = CouponSerializer
     permission_classes = [permissions.IsAuthenticated]
+
+    def get_serializer_context(self):
+        context = super().get_serializer_context()
+        context.update({"request": self.request})
+        return context
 
 class ApplyCouponView(generics.CreateAPIView):
     serializer_class = ApplyCouponSerializer
@@ -1537,3 +1600,61 @@ def debug_referral(request):
         "referral_activities": list(activities),
         "total_referral_activities": ReferralActivity.objects.filter(referrer=request.user).count(),
     })
+
+
+class MembershipPlanViewSet(viewsets.ModelViewSet):
+    """
+    Admin can manage plans; users can view available ones.
+    """
+    serializer_class = MembershipPlanSerializer
+    permission_classes = [IsAdminOrReadOnly]
+    queryset = MembershipPlan.objects.all().order_by('price_per_month')
+
+    def get_queryset(self):
+        if self.request.user.is_staff:
+            return MembershipPlan.objects.all()
+        return MembershipPlan.objects.filter(is_active=True)
+
+
+class CustomerMembershipViewSet(viewsets.ModelViewSet):
+    """
+    Manage user membership
+    - User: View/Select
+    - Admin: Manage all
+    """
+    serializer_class = CustomerMembershipSerializer
+    permission_classes = [permissions.IsAuthenticated]
+    queryset = CustomerMembership.objects.select_related('customer', 'plan')
+
+    def get_queryset(self):
+        user = self.request.user
+        if user.is_staff:
+            return CustomerMembership.objects.all()
+        return CustomerMembership.objects.filter(customer__user=user)
+
+    @action(detail=False, methods=['get'])
+    def my_membership(self, request):
+        """Get current user's membership"""
+        customer = request.user.customer_profile
+        membership = CustomerMembership.objects.filter(customer=customer, active=True).first()
+        if not membership:
+            return Response({"message": "No active membership"}, status=404)
+        serializer = self.get_serializer(membership)
+        return Response(serializer.data)
+
+    @action(detail=False, methods=['post'])
+    def activate(self, request):
+        """
+        User selects a plan from frontend (no payment for now).
+        Frontend will send: { "plan_id": <id> }
+        """
+        serializer = self.get_serializer(data=request.data, context={'request': request})
+        serializer.is_valid(raise_exception=True)
+        membership = serializer.save()
+        # if membership.active and membership.plan == selected_plan:
+        #   return Response({"message": "Already active"}, status=400)
+
+        return Response({
+            "message": f"{membership.plan.tier.title()} membership activated!",
+            "membership": CustomerMembershipSerializer(membership, context={'request': request}).data
+        }, status=201)

@@ -24,4 +24,10 @@ class IsCustomerOrReadOnly(BasePermission):
             return True
 
         # Only owner can modify their booking
-        return obj.customer.user == request.user
+        return getattr(obj.customer, "user", None) == request.user
+
+class IsAdminOrReadOnly(BasePermission):
+    def has_permission(self, request, view):
+        if request.method in SAFE_METHODS:
+            return True
+        return request.user and request.user.is_staff

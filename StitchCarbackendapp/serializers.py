@@ -1,5 +1,5 @@
 from rest_framework import serializers
-from .models import Service,CustomUser,Booking,Customer,Offer,Reward, LoyaltyPoint, RedeemedReward, EarningRule, Notification, Coupon, AppliedCoupon, Booking, Service,Vehicle, Recall, VehicleRecall, RecallServiceHistory,Review,ServiceFeedback
+from .models import Service,CustomUser,Booking,Customer,Offer,Reward, LoyaltyPoint, RedeemedReward, EarningRule, Notification, Coupon, AppliedCoupon, Booking, Service,Vehicle, Recall, VehicleRecall, RecallServiceHistory,Review,ServiceFeedback,MembershipPlan,CustomerMembership
 from django.contrib.auth import authenticate
 from rest_framework_simplejwt.tokens import RefreshToken
 from datetime import date, datetime
@@ -10,6 +10,8 @@ from .models import ReferralProfile, ReferralActivity
 from .models import Vehicle, FeaturedPromotion, PromotionBanner
 from rest_framework.decorators import action
 from django.utils import timezone
+from dateutil.relativedelta import relativedelta
+
 User = get_user_model()
 
 class PasswordResetRequestSerializer(serializers.Serializer):
@@ -135,86 +137,6 @@ class BookingSerializer(serializers.ModelSerializer):
         if services is not None:
             instance.services.set(services)
         return instance
-# class BookingSerializer(serializers.ModelSerializer):
-#     # show related object titles for readability (read-only)
-#     customer = serializers.PrimaryKeyRelatedField(queryset=Customer.objects.all(), required=False)
-#     service = serializers.PrimaryKeyRelatedField(queryset=Service.objects.all())
-#     offer = serializers.PrimaryKeyRelatedField(queryset=Offer.objects.all(), allow_null=True, required=False)
-#     customer_username = serializers.SerializerMethodField(read_only=True)
-#     customer_contact = serializers.SerializerMethodField(read_only=True)
-#     service_title = serializers.SerializerMethodField(read_only=True)
-#     offer_code = serializers.SerializerMethodField(read_only=True)
-
-#     class Meta:
-#         model = Booking
-#         fields = [
-#             'id', 'customer', 'customer_username', 'customer_contact','service', 'service_title', 'offer', 'offer_code',
-#             'booking_date', 'appointment_date', 'appointment_time',
-#             'vehicle_make', 'vehicle_model', 'vehicle_year',
-#             'total_price', 'status', 'offer_code','notes'
-#         ]
-#         read_only_fields = ['id', 'booking_date', 'total_price', 'customer_username', 'service_title']
-
-#     def __init__(self, *args, **kwargs):
-#         super().__init__(*args, **kwargs)
-#         # Safe access to context
-#         request = self.context.get('request') if hasattr(self, 'context') else None
-#         if request and not request.user.is_staff:
-#             # Normal users: hide the customer field in the form
-#             self.fields.pop('customer', None),
-#             # self.fields.pop('status', None)  # hide status
-
-
-#     def get_customer_username(self, obj):
-#         try:
-#             return obj.customer.user.username
-#         except Exception:
-#             return None
-
-#     def get_service_title(self, obj):
-#         return getattr(obj.service, 'title', None)
-
-#     def get_offer_code(self, obj):
-#         return getattr(obj.offer, 'code', None) if obj.offer else None
-
-#     def validate_appointment_date(self, value):
-#         # must be a date in the future (or today) — adjust per business rules
-#         if value < date.today():
-#             raise serializers.ValidationError("appointment_date must be today or a future date.")
-#         return value
-
-#     def validate_vehicle_year(self, value):
-#         if not value.isdigit() or len(value) not in (3,4):
-#             raise serializers.ValidationError("vehicle_year must be numeric (e.g. '2020').")
-#         return value
-#     def get_customer_contact(self, obj):
-#         try:
-#             return obj.customer.user.phone_number  # or whatever your field name is in Customer model
-#         except Exception:
-#             return None
-
-#     def validate(self, data):
-#         # appointment_date + appointment_time combined in future
-#         appt_date = data.get('appointment_date', None)
-#         appt_time = data.get('appointment_time', None)
-#         if appt_date and appt_time:
-#             combined = datetime.combine(appt_date, appt_time)
-#             if combined < datetime.now():
-#                 raise serializers.ValidationError("Appointment date/time must be in the future.")
-#         return data
-
-#     def create(self, validated_data):
-#         # customer assignment is handled in the view (preferred), but if customer is present allow it
-#         booking = Booking.objects.create(**validated_data)
-#         # model's save() will compute total_price already, but we called create -> ensure total_price is set
-#         booking.save()
-#         return booking
-
-#     def update(self, instance, validated_data):
-#         for k, v in validated_data.items():
-#             setattr(instance, k, v)
-#         instance.save()
-#         return instance
 
 
 class CustomUserSerializer(serializers.ModelSerializer):
@@ -222,11 +144,12 @@ class CustomUserSerializer(serializers.ModelSerializer):
     password = serializers.CharField(
         write_only=True, required=False, allow_blank=True
     )
+    membership_tier = serializers.SerializerMethodField()
     class Meta:
         model = CustomUser
         fields = [
             'id', 'username', 'email', 'password','first_name', 'last_name',
-            'phone_number', 'profile_image', 'is_customer', 'is_staff','customer_profile'
+            'phone_number', 'profile_image', 'is_customer', 'is_staff','customer_profile','membership_tier'
         ]
         read_only_fields=['id','is_staff']
     
@@ -304,6 +227,18 @@ class CustomUserSerializer(serializers.ModelSerializer):
         user.profile_image.delete(save=True)
         return Response({'message': 'Profile image deleted successfully'})
 
+    def get_membership_tier(self, obj):
+        try:
+            customer = obj.customer_profile
+            membership = CustomerMembership.objects.filter(
+                customer=customer, active=True
+            ).select_related("plan").first()
+            if membership and membership.plan:
+                return f"{membership.plan.tier} Member"
+        except Exception:
+            pass
+        return "Visitor" 
+
 class CustomerSerializer(serializers.ModelSerializer):
     class Meta:
         model = Customer
@@ -367,37 +302,6 @@ class RegisterSerializer(serializers.ModelSerializer):
 
         return user
 
-
-# class RegisterSerializer(serializers.ModelSerializer):
-#     password = serializers.CharField(write_only=True)
-#     confirm_password = serializers.CharField(write_only=True)
-
-#     class Meta:
-#         model = CustomUser
-#         fields = ['username', 'email','phone_number','password', 'confirm_password']
-
-#     def validate_email(self, value):
-#         if User.objects.filter(email=value).exists():
-#             raise serializers.ValidationError("Email already exists")
-#         return value   
-
-#     def validate_username(self, value):
-#         if not value.isalpha():
-#             raise serializers.ValidationError("Username must contain only letters")
-#         return value    
-
-#     def validate(self, attrs):
-#         if attrs['password'] != attrs['confirm_password']:
-#             raise serializers.ValidationError({"confirm_password": "Passwords do not match."})
-#         return attrs
-
-#     def create(self, validated_data):
-#         validated_data.pop('confirm_password')  
-#         password = validated_data.pop('password')
-#         user = CustomUser(**validated_data)
-#         user.set_password(password)
-#         user.save()
-#         return user
             
 class LoginSerializer(serializers.Serializer):
     username = serializers.CharField()
@@ -431,7 +335,7 @@ class VerifyCodeSerializer(serializers.Serializer):
 class OfferSerializer(serializers.ModelSerializer):
     services_with_details = serializers.SerializerMethodField()
     image_url = serializers.SerializerMethodField()
-
+    can_apply = serializers.SerializerMethodField()
     class Meta:
         model = Offer
         fields = [
@@ -440,11 +344,14 @@ class OfferSerializer(serializers.ModelSerializer):
             'services_with_details',
             'title',
             'description',
+            'discount_type',
             'discount_percentage',
             'valid_from',
             'valid_to',
             'is_active',
             'image_url',
+            'eligible_memberships', 
+            'can_apply'
         ]
 
     def get_services_with_details(self, obj):
@@ -462,6 +369,17 @@ class OfferSerializer(serializers.ModelSerializer):
             return request.build_absolute_uri(obj.image.url)
         return None
 
+    def get_can_apply(self, obj):
+        request = self.context.get('request')
+        user = getattr(request, 'user', None)
+        if not user or not user.is_authenticated:
+            return False
+
+        if not hasattr(user, 'customer_profile'):
+            return False
+
+        customer = user.customer_profile
+        return obj.is_eligible_for(customer)
 
 
 class ReferralProfileSerializer(serializers.ModelSerializer):
@@ -551,15 +469,64 @@ class NotificationSerializer(serializers.ModelSerializer):
 class CouponSerializer(serializers.ModelSerializer):
     applicable_service_title = serializers.CharField(source='applicable_service.title', read_only=True, allow_null=True)
     usage_restriction = serializers.SerializerMethodField()
-
-
+    can_apply = serializers.SerializerMethodField()
+    used = serializers.SerializerMethodField()
     class Meta:
         model = Coupon
-        fields = ['id', 'code', 'title', 'description', 'discount_type', 'discount_value', 'expiry_date', 'applicable_service','applicable_service_title', 'usage_restriction']
+        fields = ['id', 'code', 'title', 'description', 'discount_type', 'discount_value', 'expiry_date', 'applicable_service','applicable_service_title', 'usage_restriction','eligible_memberships', 'can_apply','used']
     def get_usage_restriction(self, obj):
         if obj.applicable_service:
             return f"Only for {obj.applicable_service.title}"
         return "Can be used on any service"
+    def get_can_apply(self, obj):
+        user = self.context.get('request').user
+
+        # Anonymous users can’t apply
+        if not user.is_authenticated:
+            return False
+
+        # ✅ If coupon has eligible membership tiers
+        if obj.eligible_memberships.exists():
+            if not hasattr(user, 'customer_profile'):
+                return False
+
+            customer = getattr(user, 'customer_profile', None)
+            membership = getattr(customer, 'membership', None)
+
+            # ✅ Check if membership is active and not expired
+            if not (membership and membership.active and membership.expiry_date >= timezone.now().date()):
+                return False
+
+            # ✅ Check if user’s membership tier matches eligible ones
+            eligible_ids = obj.eligible_memberships.values_list('id', flat=True)
+            if membership.plan.id not in eligible_ids:
+                return False
+            return True
+        return True
+
+
+    def get_used(self, obj):
+        """✅ Check if user has already used this coupon"""
+        user = self.context.get('request').user
+        if not user.is_authenticated:
+            return False
+
+        try:
+            customer = user.customer_profile
+        except Exception:
+            return False
+
+        from .models import AppliedCoupon
+        return AppliedCoupon.objects.filter(customer=customer, coupon=obj).exists()    
+
+    # def get_can_apply(self, obj):
+    #     user = self.context.get('request').user
+    #     if obj.eligible_memberships:
+    #         if not hasattr(user, 'customer_profile'):
+    #             return False
+    #         membership = getattr(user.customer_profile, 'membership', None)
+    #         return membership and membership.active and membership.expiry_date >= timezone.now().date()
+    #     return True    
 
 class ApplyCouponSerializer(serializers.Serializer):
     coupon_code = serializers.CharField()
@@ -578,6 +545,24 @@ class ApplyCouponSerializer(serializers.Serializer):
         if coupon.expiry_date and coupon.expiry_date < timezone.now().date():
             raise serializers.ValidationError("Coupon has expired.")
 
+            # ✅ Check if coupon restricted to membership plans
+        if coupon.eligible_memberships.exists():
+            # If user has no profile or membership
+            if not hasattr(user, 'customer_profile'):
+                raise serializers.ValidationError("Only members can use this coupon.")
+            
+            customer = user.customer_profile
+            membership = getattr(customer, 'membership', None)
+            
+            # If inactive or expired membership
+            if not (membership and membership.active and membership.expiry_date >= timezone.now().date()):
+                raise serializers.ValidationError("Only members with an active plan can use this coupon.")
+            
+            # If membership plan doesn’t match eligible ones
+            eligible_ids = coupon.eligible_memberships.values_list('id', flat=True)
+            if membership.plan.id not in eligible_ids:
+                raise serializers.ValidationError("This coupon is not valid for your membership tier.")
+
         try:
             booking = Booking.objects.get(id=booking_id, customer__user=user)
         except Booking.DoesNotExist:
@@ -592,48 +577,44 @@ class ApplyCouponSerializer(serializers.Serializer):
                 )
 
         # Optional: Prevent reuse (if you want one-time use per customer)
-        if AppliedCoupon.objects.filter(customer=booking.customer, coupon=coupon).exists():
+        if AppliedCoupon.objects.filter(
+            coupon=coupon,
+            customer__user=user
+        ).exists():
             raise serializers.ValidationError("You have already used this coupon.")
 
         data['coupon'] = coupon
         data['booking'] = booking
         return data
-    # def validate(self, data):
-    #     user = self.context['request'].user
-    #     coupon_code = data['coupon_code']
-    #     booking_id = data['booking_id']
-
-    #     try:
-    #         coupon = Coupon.objects.get(code=coupon_code, is_active=True)
-    #     except Coupon.DoesNotExist:
-    #         raise serializers.ValidationError("Invalid coupon code.")
-
-    #     if coupon.expiry_date < timezone.now().date():
-    #         raise serializers.ValidationError("Coupon has expired.")
-
-    
-    #     try:
-    #         booking = Booking.objects.get(id=booking_id, customer__user=user)
-    #     except Booking.DoesNotExist:
-    #         raise serializers.ValidationError("Booking not found for this user.")
-
-    #     data['coupon'] = coupon
-    #     data['booking'] = booking
-    #     return data
+   
 
     def create(self, validated_data):
         customer = validated_data['booking'].customer
         coupon = validated_data['coupon']
         booking = validated_data['booking']
 
+        booking.refresh_from_db()
+
+    # 🔹 Recalculate membership discount if applicable
+        try:
+            membership = booking.customer.membership
+            if membership and membership.active:
+                benefits = membership.get_benefits()
+                discount_percent = benefits.get("booking_discount", 0)
+                if discount_percent > 0:
+                    base_price = sum(float(s.price) for s in booking.services.all())
+                    membership_discount = (discount_percent / 100) * base_price
+                    booking.total_price = max(base_price - membership_discount, 0)
+        except Exception:
+            pass
         # 🔹 Store original price BEFORE changing it
         original_price = booking.total_price
 
         # 🔹 Calculate discount
         if coupon.discount_type == 'percentage':
-            discount = (coupon.discount_value / 100) * original_price
+            discount = (float(coupon.discount_value)/ 100) * original_price
         elif coupon.discount_type == 'fixed':
-            discount = coupon.discount_value
+            discount = float(coupon.discount_value)
         elif coupon.discount_type == 'free':
             discount = original_price
         else:
@@ -844,3 +825,88 @@ class ServiceFeedbackSerializer(serializers.ModelSerializer):
 
         validated_data['customer'] = customer
         return super().create(validated_data)
+
+class MembershipPlanSerializer(serializers.ModelSerializer):
+    image_url = serializers.SerializerMethodField()
+
+    class Meta:
+        model = MembershipPlan
+        fields = ['id', 'tier', 'price_per_month', 'description', 'benefits','duration_in_months',
+            'welcome_points', 'is_popular', 'is_active', 'image_url']
+
+    def get_image_url(self, obj):
+        request = self.context.get('request')
+        if obj.image and hasattr(obj.image, 'url'):
+            return request.build_absolute_uri(obj.image.url)
+        return None
+
+
+class CustomerMembershipSerializer(serializers.ModelSerializer):
+    plan = MembershipPlanSerializer(read_only=True)
+    plan_id = serializers.PrimaryKeyRelatedField(
+        queryset=MembershipPlan.objects.filter(is_active=True),
+        source='plan',
+        write_only=True
+    )
+
+    class Meta:
+        model = CustomerMembership
+        fields = ['id', 'plan', 'plan_id', 'joined_at', 'active', 'expiry_date']
+
+    def create(self, validated_data):
+        request = self.context['request']
+        customer = request.user.customer_profile
+        plan = validated_data['plan']
+
+        # Check if user already has this active plan
+        existing = CustomerMembership.objects.filter(customer=customer, active=True).first()
+        if existing:
+            if existing.plan == plan:
+                # Already active, no need to deactivate or create new
+                return existing
+            else:
+                # Deactivate only if plan is different
+                existing.active = False
+                existing.save()
+
+        # Create new membership
+        expiry = timezone.now().date() + relativedelta(months=plan.duration_in_months)
+        membership = CustomerMembership.objects.create(
+            customer=customer,
+            plan=plan,
+            active=True,
+            expiry_date=expiry
+        )
+
+        # Add welcome points to loyalty
+        loyalty, _ = LoyaltyPoint.objects.get_or_create(customer=customer)
+        loyalty.points += plan.welcome_points
+        loyalty.save()
+
+        return membership
+
+    # def create(self, validated_data):
+    #     request = self.context['request']
+    #     customer = request.user.customer_profile
+
+    #     # Deactivate old membership if exists
+    #     existing = CustomerMembership.objects.filter(customer=customer, active=True).first()
+    #     if existing:
+    #         existing.deactivate()
+
+    #     plan = validated_data['plan']
+    #     expiry = timezone.now().date() + relativedelta(months=plan.duration_in_months)
+    #     # Create new membership
+    #     membership = CustomerMembership.objects.create(
+    #         customer=customer,
+    #         plan=plan,
+    #         active=True,
+    #         expiry_date=expiry
+    #     )
+
+    #     # Add welcome points to loyalty
+    #     loyalty, _ = LoyaltyPoint.objects.get_or_create(customer=customer)
+    #     loyalty.points += plan.welcome_points
+    #     loyalty.save()
+
+    #     return membership

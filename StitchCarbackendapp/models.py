@@ -81,17 +81,34 @@ class Offer(models.Model):
         ('fixed', 'Fixed Services'),
         ('flexible', 'Flexible Services')  # customer can choose any service
     ]
-
+    DISCOUNT_TYPE_CHOICES = [
+        ('percentage', 'Percentage'),
+        ('flat', 'Flat'),
+        ('free', 'Free'),
+    ]
     offer_type = models.CharField(max_length=20, choices=OFFER_TYPE_CHOICES, default='flexible')
     services = models.ManyToManyField('Service', related_name='offers')
     title= models.CharField(max_length=100)
     description=models.TextField(blank=True,null=True)
-    discount_percentage = models.DecimalField(max_digits=5, decimal_places=2, help_text="Percentage discount (e.g., 10.00 = 10%)")
+    discount_type = models.CharField(
+        max_length=20,
+        choices=DISCOUNT_TYPE_CHOICES,
+        default='percentage',
+        help_text="Select whether this offer is percentage, flat, or free."
+    )
+    discount_percentage = models.DecimalField(
+        max_digits=7,
+        decimal_places=2,
+        default=0.00,
+        help_text="If percentage: 10.00 = 10%. If flat: 100 = ₹100. If free: keep 0."
+    )
     valid_from = models.DateTimeField(default=timezone.now)
     valid_to = models.DateTimeField()
     is_active = models.BooleanField(default=True)
     image = models.ImageField(upload_to='offers/', blank=True, null=True)
-     
+    eligible_memberships = models.ManyToManyField('MembershipPlan', blank=True, help_text="Leave empty for all members.")
+
+
     def __str__(self):
         service_titles = ", ".join([s.title for s in self.services.all()])
         return f"{self.title} - {service_titles}"
@@ -100,6 +117,14 @@ class Offer(models.Model):
         now = timezone.now()
         return self.is_active and self.valid_from <= now <= self.valid_to
     
+    def is_eligible_for(self, customer):
+        if not self.eligible_memberships.exists():
+            return True
+        membership = getattr(customer, 'membership', None)
+        if not membership or not membership.plan:
+            return False
+        return self.eligible_memberships.filter(id=membership.plan.id).exists()
+
 
 
 class Booking(models.Model):
@@ -334,8 +359,17 @@ class LoyaltyPoint(models.Model):
     updated_at = models.DateTimeField(auto_now=True)
 
     def add_points(self, amount):
-        self.points += int(amount)
+        bonus = 0
+        try:
+            membership = self.customer.membership
+            if membership and membership.active:
+                benefits = membership.get_benefits()
+                bonus = benefits.get("loyalty_bonus", 0)
+        except Exception:
+            pass
+        self.points += int(amount + bonus)
         self.save()
+
 
     def deduct_points(self, amount):
         if self.points >= int(amount):
@@ -402,6 +436,8 @@ class Coupon(models.Model):
     expiry_date = models.DateField()
     applicable_service = models.ForeignKey('Service', on_delete=models.CASCADE, related_name='coupons', null=True, blank=True)
     is_active = models.BooleanField(default=True)
+    eligible_memberships = models.ManyToManyField('MembershipPlan', blank=True, help_text="Leave empty for all members.")
+
 
     def __str__(self):
         return f"{self.code} ({self.discount_type})"
@@ -413,6 +449,14 @@ class Coupon(models.Model):
         if not self.expiry_date:
             return False  
         return timezone.now().date() <= self.expiry_date
+    
+    def is_eligible_for(self, customer):
+        if not self.eligible_memberships.exists():
+            return True
+        membership = getattr(customer, 'membership', None)
+        if not membership or not membership.plan:
+            return False
+        return self.eligible_memberships.filter(id=membership.plan.id).exists()
 
 class AppliedCoupon(models.Model):
     customer = models.ForeignKey('Customer', on_delete=models.CASCADE, related_name='applied_coupons')
@@ -566,3 +610,44 @@ class ServiceFeedback(models.Model):
     
     def __str__(self):
         return f"{self.customer.user.username} - {self.booking.id} ({self.overall_rating} stars)"
+
+
+class MembershipPlan(models.Model):
+    TIER_CHOICES = [
+        ('Silver', 'Silver'),
+        ('Gold', 'Gold'),
+        ('Platinum', 'Platinum'),
+        ('Diamond', 'Diamond'),
+    ]
+
+    tier = models.CharField(max_length=20, choices=TIER_CHOICES, unique=True)
+    price_per_month = models.DecimalField(max_digits=8, decimal_places=2)
+    description = models.TextField(blank=True, null=True)
+    image = models.ImageField(upload_to='memberships/', blank=True, null=True)
+    benefits = models.JSONField(default=dict, help_text="Ex: {'booking_discount':10, 'loyalty_bonus':2}")
+    duration_in_months = models.PositiveIntegerField(default=1, help_text="Membership validity in months")
+    welcome_points = models.PositiveIntegerField(default=0)    
+    is_popular = models.BooleanField(default=False)
+    is_active = models.BooleanField(default=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    def __str__(self):
+        return f"{self.tier.title()} Membership"
+
+
+class CustomerMembership(models.Model):
+    customer = models.OneToOneField('Customer', on_delete=models.CASCADE, related_name='membership')
+    plan = models.ForeignKey(MembershipPlan, on_delete=models.SET_NULL, null=True)
+    joined_at = models.DateTimeField(auto_now_add=True)
+    active = models.BooleanField(default=True)
+    expiry_date = models.DateField(blank=True, null=True)
+
+    def __str__(self):
+        return f"{self.customer.user.username} - {self.plan.tier if self.plan else 'No Plan'}"
+
+    def get_benefits(self):
+        return self.plan.benefits if self.plan else {}
+
+    def deactivate(self):
+        self.active = False
+        self.save()

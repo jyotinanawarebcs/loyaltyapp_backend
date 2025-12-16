@@ -1,7 +1,7 @@
 from django.contrib import admin
 from .models import (
     Service, Booking, Coupon, Reward, LoyaltyPoint,
-    RedeemedReward, EarningRule,Offer,Vehicle,Customer,ServiceFeedback
+    RedeemedReward, EarningRule,Offer,Vehicle,Customer,ServiceFeedback, MembershipPlan, CustomerMembership
 )
 from django.contrib.auth import get_user_model
 from django.utils.html import format_html
@@ -106,6 +106,7 @@ class CouponAdmin(admin.ModelAdmin):
     list_editable = ('is_active',)
     readonly_fields = ('created_status',)
     date_hierarchy = 'expiry_date'
+    filter_horizontal = ('eligible_memberships',) 
 
     def created_status(self, obj):
         """Helper: show created/expired/active label."""
@@ -132,6 +133,9 @@ class CouponAdmin(admin.ModelAdmin):
         }),
         ('Validity & Rules', {
             'fields': ('expiry_date', 'applicable_service', 'is_active', 'created_status')
+        }),
+        ('Eligibility', {  # ✅ Add this block
+            'fields': ('eligible_memberships',)
         }),
     )
 @admin.register(Offer)
@@ -398,4 +402,75 @@ class ServiceFeedbackAdmin(admin.ModelAdmin):
     def get_services(self, obj):
         return ", ".join([s.title for s in obj.booking.services.all()])
     get_services.short_description = 'Services'
+
+@admin.register(MembershipPlan)
+class MembershipPlanAdmin(admin.ModelAdmin):
+    list_display = (
+        "tier",
+        "price_per_month",
+        "duration_in_months",
+        "welcome_points",
+        "is_popular",
+        "is_active",
+        "created_at_colored",
+    )
+    list_filter = ("is_active", "is_popular", "created_at")
+    search_fields = ("tier", "description")
+    ordering = ("price_per_month",)
+    list_editable = ("is_active", "is_popular")
+    readonly_fields = ("created_at",)
+    fieldsets = (
+        ("Plan Info", {
+            "fields": ("tier", "price_per_month", "duration_in_months", "description", "image")
+        }),
+        ("Benefits", {
+            "fields": ("benefits", "welcome_points")
+        }),
+        ("Status", {
+            "fields": ("is_popular", "is_active")
+        }),
+    )
+
+    def created_at_colored(self, obj):
+        """Color-coded creation date"""
+        color = "green" if obj.is_active else "gray"
+        return format_html('<span style="color:{};">{}</span>', color, obj.created_at.strftime("%Y-%m-%d"))
+    created_at_colored.short_description = "Created"
+
+
+# ============================
+# CUSTOMER MEMBERSHIP ADMIN
+# ============================
+@admin.register(CustomerMembership)
+class CustomerMembershipAdmin(admin.ModelAdmin):
+    list_display = (
+        "customer",
+        "plan",
+        "active_status_colored",
+        "joined_at",
+        "expiry_date",
+    )
+    list_filter = ("active", "plan__tier", "joined_at", "expiry_date")
+    search_fields = ("customer__user__username", "plan__tier")
+    ordering = ("-joined_at",)
+    autocomplete_fields = ("customer", "plan")
+
+    def active_status_colored(self, obj):
+        """Color-coded active status"""
+        today = timezone.now().date()
+        if not obj.active:
+            return format_html('<b style="color:red;">Inactive</b>')
+        if obj.expiry_date and obj.expiry_date < today:
+            return format_html('<b style="color:gray;">Expired</b>')
+        return format_html('<b style="color:green;">Active</b>')
+    active_status_colored.short_description = "Status"
+
     
+from django.contrib import admin
+from .models import AppliedCoupon
+
+@admin.register(AppliedCoupon)
+class AppliedCouponAdmin(admin.ModelAdmin):
+    list_display = ('customer', 'coupon', 'booking', 'discounted_price', 'applied_at')
+    search_fields = ('customer__user__username', 'coupon__code', 'booking__id')
+    list_filter = ('coupon', 'applied_at')
